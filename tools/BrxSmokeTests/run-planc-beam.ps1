@@ -5,6 +5,7 @@
 # RC_COUNT_BBS / .xls); kopie rysunku z layoutami do PDF w -PdfDir (zmienna RC_BEAM_PDF_DIR; rysunek testowy NIE jest zapisywany).
 # Zrzuty D326 / D119 porównywane z wtyczką HEAD: najpierw przebieg bazowy
 #   run-planc-beam.ps1 -Baseline -PluginDll <DLL wtyczki HEAD>   (RC_BEAM_DUMP_TAG=head, skrypt planc-beam-base.scr),
+#   (od K1: DLL bazowa = HEAD z poprawką K1 — K1 zmienia siatkę płyt z nibem zawiniętym 319 / 528 / 539),
 # potem właściwy:  run-planc-beam.ps1 -PluginDll bin-staging\RcAutomation.dll   (zrzuty „new” porównane z „head”).
 # GA (DXF, tylko odczyt): -GaDir albo zmienna RC_BEAM_GA (folder z „… - Plot 119.dxf”, „… - PLOT 328-329.dxf”, …).
 # Uruchamia ukrytą instancję BricsCAD (/automation), czeka na koniec (limit czasu), wypisuje planc-beam-results.txt.

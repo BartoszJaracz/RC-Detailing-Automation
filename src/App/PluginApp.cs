@@ -14,7 +14,10 @@ namespace BricsCadRc.App
             var doc = Application.DocumentManager.MdiActiveDocument;
             string built = "?";
             try { built = System.IO.File.GetLastWriteTime(typeof(PluginApp).Assembly.Location).ToString("yyyy-MM-dd HH:mm"); } catch (System.Exception logEx) { Log.Error("PluginApp.Initialize", logEx); }
-            doc?.Editor.WriteMessage($"\n[RC SLAB] Plugin zaladowany. Build: {built}\n");
+            doc?.Editor.WriteMessage($"\n[{ProductInfo.Name}] Plugin zaladowany. Build: {built}\n");
+            // Plan C, krok 3f: format nowych prętów (RC_BAR_FORMAT, %APPDATA%\RcAutomation\barformat.txt)
+            try { doc?.Editor.WriteMessage($"[{ProductInfo.Name}] Nowe pręty: {BarFormat.DisplayName(BarFormat.Current)}\n"); }
+            catch (System.Exception ex) { Log.Error("PluginApp.BarFormat", ex); }
 
             // PICKSTYLE=1 — zaznaczanie calych grup przy kliknieciu na czlon grupy.
             // Bez tego klik na linie/kropke zaznacza tylko ten element, nie cala grupe ANNOT.
@@ -23,14 +26,20 @@ namespace BricsCadRc.App
             // Ogranicz ruch blokow RC_ANNOT_nnn do osi kierunku zbrojenia (X lub Y)
             AnnotMoveOverrule.Register();
 
+            // W2: mapa klonowania oryginał → klon (BeginDeepCloneTranslation / InsertMappingAvailable) — PRZED BarCopyWatcher
+            CloneMap.Register();
+
             // Remap handle'ów block↔annot po kopiowaniu (COPY/MIRROR/ARRAY)
             BarCopyWatcher.Register();
 
             // Auto-aktualizacja rozkładów po rozciągnięciu polilinii pręta (FEATURE E)
             BarGeometryWatcher.Register();
 
-            // TODO Plan C: reaktywacja po refactorze SingleBar na BlockReference
-            // SingleBarGripOverrule.Register();
+            // Plan C — gripy pręta-bloku (BlockReference, RC_SINGLE_BAR [14]=2); krok 3f: długość 00/99 z propagacją
+            SingleBarGripOverrule.Register();
+
+            // PLAN C ETAP 3e2 — SCALE pręta-bloku: skala ±1 i obrys z danych pręta po zakończeniu komendy
+            SingleBarBlockScaleWatcher.Register();
 
             // Snap grotu MLeadera (etykieta RC_BAR) z powrotem na pręt po edycji
             RcMLeaderOverrule.Register();
@@ -42,6 +51,9 @@ namespace BricsCadRc.App
                 d => { d.CommandEnded += OnCommandEnded;  d.CommandCancelled += OnCommandCancelled; },
                 d => { d.CommandEnded -= OnCommandEnded;  d.CommandCancelled -= OnCommandCancelled; });
 
+            // Bezpiecznik przekrojów (etap 2): wydruk / PDF / PUBLISH (DocumentLockModeChanged) i komunikat przy otwarciu rysunku
+            SectionGuard.Register();
+
             RibbonBuilder.Build();
         }
 
@@ -49,11 +61,14 @@ namespace BricsCadRc.App
         {
             BarBlockHighlightManager.Unregister();
             DocumentWatch.Unsubscribe("PluginApp");
+            SectionGuard.Unregister();
 
-            // SingleBarGripOverrule.Unregister();
+            SingleBarGripOverrule.Unregister();
+            SingleBarBlockScaleWatcher.Unregister();
             RcMLeaderOverrule.Unregister();
             BarGeometryWatcher.Unregister();
             BarCopyWatcher.Unregister();
+            CloneMap.Unregister();
             AnnotMoveOverrule.Unregister();
         }
 

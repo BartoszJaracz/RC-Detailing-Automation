@@ -27,7 +27,32 @@
     <Compile Include="..\src\Core\BarShape.cs" />
     <Compile Include="..\src\Core\ShapeCodeLibrary.cs" />
     <Compile Include="..\src\Core\BarGeometryBuilder.cs" />
+    <Compile Include="..\src\Core\LegacyBarGeometry.cs" />
+    <Compile Include="..\src\Core\Log.cs" />
+    <Compile Include="..\src\App\ProductInfo.cs" />
     <Compile Include="..\src\Core\MLeaderSnapGeometry.cs" />
+    <Compile Include="..\src\Core\BarRecordRules.cs" />
+    <Compile Include="..\src\Core\BarLengthRules.cs" />
+    <Compile Include="..\src\Core\BarFrameRules.cs" />
+    <Compile Include="..\src\Core\BarDimensionRules.cs" />
+    <Compile Include="..\src\Core\BarShapeValidation.cs" />
+    <Compile Include="..\src\Core\IdenticalBarText.cs" />
+    <Compile Include="..\src\Core\PlotLabelRules.cs" />
+    <Compile Include="..\src\Core\PunchingReport.cs" />
+    <Compile Include="..\src\Core\XlsxReader.cs" />
+    <Compile Include="..\src\Core\NibLoopBuilder.cs" />
+    <Compile Include="..\src\Core\MTextParagraphs.cs" />
+    <Compile Include="..\src\Core\OutlineAxisRules.cs" />
+    <Compile Include="..\src\Core\BbsCountRules.cs" />
+    <Compile Include="..\src\Core\SectionPlanner.cs" />
+    <Compile Include="..\src\Core\SectionFingerprint.cs" />
+    <Compile Include="..\src\Core\SectionRecord.cs" />
+    <Compile Include="..\src\Core\SectionLabelCarry.cs" />
+    <Compile Include="..\src\Core\BeamGeometry.cs" />
+    <Compile Include="..\src\Core\NibStepRules.cs" />
+    <Compile Include="..\src\Core\BarLabelRules.cs" />
+    <Compile Include="..\src\Core\RectilinearPolygons.cs" />
+    <Compile Include="..\src\Core\BeamDetailRules.cs" />
   </ItemGroup>
 
 </Project>

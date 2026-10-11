@@ -48,6 +48,9 @@ namespace BricsCadRc.Commands
                 var pp3 = ed.GetPoint(o3);
                 if (pp3.Status != PromptStatus.OK) return;
 
+                // Nib: otwarta linia uskoku domykana krawędzią obrysu (decyzja użytkownika A9.5)
+                NibAutoClose.EnsureForCommand(doc, per.ObjectId, T);
+
                 var ctx = AutoRebarEngine.PrepareSection(db, per.ObjectId, p1, p2, new Point2d(pp3.Value.X, pp3.Value.Y));
                 if (ctx == null) { ed.WriteMessage($"\n{T} Obrys płyty musi być zamkniętą polilinią.\n"); return; }
                 foreach (var s in ctx.Info) ed.WriteMessage($"\n{T} {s}");
@@ -64,16 +67,108 @@ namespace BricsCadRc.Commands
 
                 int n;
                 using (doc.LockDocument())
-                    n = AutoRebarEngine.DrawSection(db, ctx, plan, pi.Value, dlg.Letter);
+                    n = AutoRebarEngine.DrawSectionRecorded(db, ctx, plan, pi.Value, dlg.Letter);
 
                 int top = plan.Dots.Count(d => d.Top), bot = plan.Dots.Count - top;
                 ed.WriteMessage($"\n{T} Przekrój {dlg.Letter}-{dlg.Letter}: długość {plan.UMax - plan.UMin:F0} mm, " +
                                 $"pręty w przekroju: {bot} dołem / {top} górą, w widoku: {plan.Bars.Count}, pale: {plan.Piles.Count}; " +
                                 $"znaczniki na {ctx.Views.Count} rzucie(ach) ({n} obiektów).\n");
+
+                // bezpiecznik (P3): chmurki „NIEAKTUALNY” wszystkich przekrojów rysunku — zapis tylko przy zmianie stanu
+                using (doc.LockDocument())
+                {
+                    var infos = SectionStore.CheckAll(db, includeLegacy: false);
+                    var (added, removed) = SectionStore.SyncClouds(db, infos);
+                    int stale = infos.Count(s => s.Status == SectionStatus.Nieaktualny);
+                    if (stale > 0 || added + removed > 0)
+                        ed.WriteMessage($"\n{T} Inne przekroje NIEAKTUALNE: {stale} (chmurki: +{added} / −{removed}) — szczegóły: RC_SECTION_CHECK.\n");
+                }
             }
             catch (System.Exception ex)
             {
                 Log.Error("SectionCommands.Section", ex);
+                ed.WriteMessage($"\n{T} Błąd: {ex.Message}\n");
+            }
+        }
+
+        /// <summary>
+        /// RC_SECTION_CHECK — aktualność przekrojów rysunku (bezpiecznik, etap 1): lista ze statusem i przyczynami, synchronizacja
+        /// chmurek „NIEAKTUALNY” (warstwa niedrukowana RC-SECTION-STATUS; zapis tylko przy zmianie stanu). Przeliczenie tylko do odczytu.
+        /// </summary>
+        [CommandMethod("RC_SECTION_CHECK", CommandFlags.Modal)]
+        public static void SectionCheck()
+        {
+            var doc = Application.DocumentManager.MdiActiveDocument;
+            if (doc == null) return;
+            var ed = doc.Editor;
+            var db = doc.Database;
+            const string T = "[RC SECTION]";
+            try
+            {
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                var infos = SectionStore.CheckAll(db, includeLegacy: true);
+                sw.Stop();
+                if (infos.Count == 0) { ed.WriteMessage($"\n{T} Brak przekrojów w rysunku.\n"); return; }
+
+                var counts = infos.GroupBy(s => s.Status).OrderBy(g => g.Key)
+                                  .Select(g => $"{SectionStore.StatusText(g.Key)} {g.Count()}");
+                ed.WriteMessage($"\n{T} Przekroje: {infos.Count} ({string.Join(", ", counts)}) — sprawdzono w {sw.ElapsedMilliseconds} ms.");
+                foreach (var s in infos)
+                {
+                    string head = s.TitleId.IsNull ? $"(GUID {(s.Guid.Length > 0 ? s.Guid : "—")})" : s.Label;
+                    ed.WriteMessage($"\n{T} {head}: {SectionStore.StatusText(s.Status)}" +
+                                    (s.Reasons.Count > 0 ? " — " + string.Join("; ", s.Reasons) : "") + ".");
+                    foreach (var i in s.Info) ed.WriteMessage($"\n{T}     info: {i}");
+                    foreach (var w in s.Warnings) ed.WriteMessage($"\n{T}     uwaga: {w}");
+                }
+                var (added, removed) = SectionStore.SyncClouds(db, infos);
+                if (added + removed > 0) ed.WriteMessage($"\n{T} Chmurki „NIEAKTUALNY”: dodano {added}, usunięto {removed} (warstwa {AutoRebarEngine.SectionStatusLayer}, niedrukowana).");
+                ed.WriteMessage("\n");
+            }
+            catch (System.Exception ex)
+            {
+                Log.Error("SectionCommands.SectionCheck", ex);
+                ed.WriteMessage($"\n{T} Błąd: {ex.Message}\n");
+            }
+        }
+
+        /// <summary>
+        /// RC_SECTION_UPDATE — aktualizacja przekroju (bezpiecznik, etapy 3–4): wskazany przekrój albo [Wszystkie] nieaktualne.
+        /// Przeliczenie jak RC_SECTION z zachowaniem ręcznych przesunięć opisów, tytułu, liter znaczników i całego przekroju;
+        /// przekrój „nieznany” (stary, bez danych) — adopcja (SectionUpdater). Jedna komenda = jeden Ctrl+Z.
+        /// Tryb bez okien: zmienna RC_SG_PICK = handle wskazanego obiektu (testy), zamiast wskazania.
+        /// </summary>
+        [CommandMethod("RC_SECTION_UPDATE", CommandFlags.Modal)]
+        public static void SectionUpdate()
+        {
+            var doc = Application.DocumentManager.MdiActiveDocument;
+            if (doc == null) return;
+            var ed = doc.Editor;
+            var db = doc.Database;
+            const string T = "[RC SECTION]";
+            SectionUpdater.LastMessages.Clear();
+            try
+            {
+                string testPick = ScriptMode.IsNonInteractive() ? Environment.GetEnvironmentVariable("RC_SG_PICK") : null;
+                if (!string.IsNullOrEmpty(testPick))
+                {
+                    Environment.SetEnvironmentVariable("RC_SG_PICK", null);   // jednorazowo
+                    var id = SingleBarEngine.HandleToObjectId(db, testPick.Trim());
+                    if (id.IsNull || id.IsErased) { ed.WriteMessage($"\n{T} RC_SG_PICK: brak obiektu {testPick}.\n"); return; }
+                    SectionUpdater.UpdatePicked(doc, id);
+                    return;
+                }
+                var peo = new PromptEntityOptions("\nWskaż przekrój do aktualizacji (tytuł albo dowolny jego obiekt) albo [Wszystkie] nieaktualne: ");
+                peo.Keywords.Add("Wszystkie");
+                peo.AppendKeywordsToMessage = false;
+                var per = ed.GetEntity(peo);
+                if (per.Status == PromptStatus.Keyword) SectionUpdater.UpdateAll(doc);
+                else if (per.Status == PromptStatus.OK) SectionUpdater.UpdatePicked(doc, per.ObjectId);
+                ed.WriteMessage("\n");
+            }
+            catch (System.Exception ex)
+            {
+                Log.Error("SectionCommands.SectionUpdate", ex);
                 ed.WriteMessage($"\n{T} Błąd: {ex.Message}\n");
             }
         }

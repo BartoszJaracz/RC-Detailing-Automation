@@ -111,7 +111,7 @@ namespace BricsCadRc.Commands
                             if (barEnt != null)
                             {
                                 elevBar.LabelHandle = labelId.Handle.ToString();
-                                SingleBarEngine.WriteXData(barEnt, elevBar);
+                                BarXData.Write(barEnt, elevBar);
                             }
                             trLbl.Commit();
                         }
@@ -233,7 +233,9 @@ namespace BricsCadRc.Commands
                 {
                     if (!string.IsNullOrEmpty(plotLabel))
                     {
-                        int hit = choices.FindIndex(c => NormPlot(c.Label) == NormPlot(plotLabel));
+                        // POPRAWKI 24: dawna etykieta sklejona z nagłówka map („PLOT 326h = 225 mm | …”) → „PLOT 326”
+                        string wanted = NormPlot(MTextParagraphs.RepairGluedMapLabel(plotLabel));
+                        int hit = choices.FindIndex(c => NormPlot(c.Label) == wanted);
                         if (hit >= 0) return hit;
                         ed.WriteMessage($"\n{T} Płyty {plotLabel} z map nie ma w raporcie przebicia — wybierz płytę z listy.");
                     }

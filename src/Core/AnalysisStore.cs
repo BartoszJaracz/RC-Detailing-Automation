@@ -51,7 +51,8 @@ namespace BricsCadRc.Core
                 if (v == null) return false;
                 if (v.Length > 0) mapsPath   = v[0].Value as string ?? "";
                 if (v.Length > 1) reportPath = v[1].Value as string ?? "";
-                if (v.Length > 2) plotLabel  = v[2].Value as string ?? "";
+                // Etykieta sklejona przez import map sprzed poprawki 24 („PLOT 326h = 225 mm | …”) → „PLOT 326”
+                if (v.Length > 2) plotLabel  = MTextParagraphs.RepairGluedMapLabel(v[2].Value as string ?? "");
                 return true;
             }
             catch (Exception ex) { Log.Error("AnalysisStore.TryLoad", ex); return false; }

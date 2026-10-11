@@ -99,6 +99,10 @@ namespace BricsCadRc.Commands
                 return;
             }
 
+            // Nib: otwarta linia uskoku domykana krawędzią obrysu (po obu wskazaniach; obrys rysowany — pomijany)
+            if (!bottomDrawn) NibAutoClose.EnsureForCommand(doc, bottomId, "[AutoRebar]");
+            if (!topDrawn) NibAutoClose.EnsureForCommand(doc, topId, "[AutoRebar]");
+
             int nB1 = 0, nB2 = 0, nU1 = 0, nU2 = 0, nU3 = 0, nT1 = 0, nT2 = 0, nB3 = 0;
             bool hasNib = NibDetector.Detect(db, bottomId) != null;
             try
@@ -213,6 +217,7 @@ namespace BricsCadRc.Commands
 
             var slabId = SlabPicker.PickOrDraw(doc, SlabLayer, out bool isDrawn);
             if (slabId.IsNull) return;
+            if (!isDrawn) NibAutoClose.EnsureForCommand(doc, slabId, "[AutoRebar]");
 
             try
             {

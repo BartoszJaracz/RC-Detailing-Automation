@@ -472,7 +472,7 @@ namespace BricsCadRc.Core
             if (IsOblique(bar.Angle))
             {
                 double textLen = bar.TextLen > 0 ? bar.TextLen
-                    : ($"{bar.EffectiveCount} {bar.Mark}").Length * Scaled(DefaultTextHeight, bar) * 0.85;
+                    : ($"{bar.CountText} {bar.Mark}").Length * Scaled(DefaultTextHeight, bar) * 0.85;
                 minArm = textLen + 2 * Scaled(TextArmOffset, bar);
             }
             var res = FollowSkewEnd(pts, startExt, endExt, horizontal, hasSkew, minArm, bar.Angle,
@@ -1061,7 +1061,7 @@ namespace BricsCadRc.Core
             var perpDir = new Vector3d(-Math.Sin(textAngle), Math.Cos(textAngle), 0);
 
             // 4. Tymczasowy DBText żeby zmierzyć textLen
-            string textString = $"{bar.EffectiveCount} {bar.Mark}";
+            string textString = $"{bar.CountText} {bar.Mark}";
             double scaledTextH = Scaled(DefaultTextHeight, bar);
             double textLen;
             {
@@ -1822,9 +1822,10 @@ namespace BricsCadRc.Core
 
                 using var tr = db.TransactionManager.StartTransaction();
 
-                var srcPline = tr.GetObject(srcId, OpenMode.ForRead)
-                    as Teigha.DatabaseServices.Polyline;
-                var srcBar = srcPline != null ? SingleBarEngine.ReadBarXData(srcPline) : null;
+                // Pręt: polilinia albo pręt-blok v2 (Plan C)
+                var srcEnt = BarEntity.From(tr.GetObject(srcId, OpenMode.ForRead) as Entity,
+                                            BarKinds.Polyline | BarKinds.Block);
+                var srcBar = srcEnt != null ? srcEnt.Read() : null;
                 if (srcBar == null || string.IsNullOrEmpty(srcBar.LabelHandle))
                 { tr.Commit(); return; }
 

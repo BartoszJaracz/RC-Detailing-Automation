@@ -86,6 +86,9 @@ namespace BricsCadRc.Core
                 if (!(tr.GetObject(slabId, OpenMode.ForRead) is Polyline pl)) return 0;
                 verts = GeometryHelper.GetPolylineVertices(pl);
                 slabBox = GeometryHelper.PolylineBbox(pl);
+                // POPRAWKI 25: obrys prawie osiowy (≤ 4 mm) — obliczenia na kopii wyprostowanej; idealny — bez zmian
+                var sq = GeometryHelper.SquaredOrSame(verts);
+                if (!ReferenceEquals(sq, verts)) { verts = sq; slabBox = GeometryHelper.VerticesBbox(verts); }
                 slabTag = CurrentSlabTagFor(pl);
                 tr.Commit();
             }
@@ -181,7 +184,12 @@ namespace BricsCadRc.Core
                 var p1 = corner + b * firstOff - u * (B3Length / 2);
 
                 int posNr = SingleBarEngine.ExtractPosNr(tpl.bar.Mark);
-                if (posNr <= 0) posNr = 1;
+                // Szablon bez numeru pozycji — bez rozkładu (numer wyłącznie z PositionCounter.NextAuto; 01 = UB)
+                if (posNr <= 0)
+                {
+                    Log.Info($"AutoRebar.CreateCornerB3: szablon {tpl.bar?.Mark} bez numeru pozycji — B3 ADD pominięty.");
+                    return ObjectId.Null;
+                }
                 var bar = BuildBarData(B3Diameter, posNr, B3Length, B3LayerCode);
                 bar.Mark            = BarData.FormatMark(B3Diameter, posNr, B3Spacing, B3Count) + " " + B3AddSuffix;
                 bar.Spacing         = B3Spacing;

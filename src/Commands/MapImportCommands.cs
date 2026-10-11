@@ -48,7 +48,7 @@ namespace BricsCadRc.Commands
                 src = MapImportEngine.ReadSource(path, warnings);
                 if (src.Plots.Count == 0)
                 {
-                    ed.WriteMessage($"\n{T} W pliku map nie ma płyt (PH-SLAB-HEADER „PLOT …”).\n");
+                    ed.WriteMessage($"\n{T} W pliku map nie ma płyt (PH-SLAB-HEADER „PLOT …” / „GARAGE …”).\n");
                     return null;
                 }
 
@@ -58,7 +58,7 @@ namespace BricsCadRc.Commands
                 if (src.Plots.Count > 1)
                 {
                     var dlg = new PunchingPlotPickerDialog(src.Plots.Select(p => p.ToString()).ToList(), Math.Max(0, def),
-                        "Mapy zbrojenia — wybierz płytę (PLOT)",
+                        "Mapy zbrojenia — wybierz płytę (PLOT / GARAGE)",
                         def >= 0 ? "Płyty z pliku map. Podświetlona: nazwa płyty jest na rysunku." : "Płyty z pliku map.");
                     if (Application.ShowModalWindow(dlg) != true) return null;
                     k = dlg.SelectedIndex;

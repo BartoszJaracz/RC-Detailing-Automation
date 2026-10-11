@@ -34,6 +34,17 @@ namespace BricsCadRc.Core
             public string ThicknessSource, SslSource;
             public int NibCount;
             public List<string> Info = new List<string>();
+
+            // ── bezpiecznik przekrojów (odczyt, nie wpływa na rysunek) ──
+            /// <summary>Handle („X8”) obrysu wskazanego i obrysu zewnętrznego (NibDetector; bez nibu = wskazany).</summary>
+            public string PickedHandle = "", OuterHandle = "";
+            /// <summary>MinPoint obrysu zewnętrznego rzutu wskazanego (po wyprostowaniu) — początek współrzędnych względnych.</summary>
+            public Point2d MinPoint;
+            /// <summary>Punkt patrzenia (wskazany).</summary>
+            public Point2d LookPt;
+            /// <summary>Grubość i SSL z opisu płyty (null = brak opisu) — przed oknem (P1: nadpisanie ręczne).</summary>
+            public double? DescThickness;
+            public string DescSsl;
         }
 
         /// <summary>
@@ -42,20 +53,28 @@ namespace BricsCadRc.Core
         /// </summary>
         public static SectionContext PrepareSection(Database db, ObjectId slabId, Point2d p1, Point2d p2, Point2d lookPt)
         {
-            var nib = NibDetector.Detect(db, slabId);
+ // rekord RC_BEAM [38] „bez nibu” (decyzja użytkownika): nib płyty bez części przy takich belkach (profil bez nibu)
+            var nib = WithoutBeamNibs(db, NibDetector.Detect(db, slabId));
             ObjectId outerId = nib != null ? nib.OuterId : slabId;
             var ctx = new SectionContext();
             var inp = ctx.Input;
+            // wersja 3 (Z1–Z6): jeden styl zakończeń prętów w programie (stała planera); przeliczenie (RecomputeSection) idzie tą samą drogą
+            inp.EndStyle = SectionPlanner.DefaultEndStyle;
 
             List<Point2d> verts;
             string outerHandle;
             using (var tr = db.TransactionManager.StartOpenCloseTransaction())
             {
                 if (!(tr.GetObject(outerId, OpenMode.ForRead) is Polyline pl) || !GeometryHelper.IsEffectivelyClosed(pl)) return null;
-                verts = GeometryHelper.GetPolylineVertices(pl);
+                // POPRAWKI 25: obrys prawie osiowy (≤ 4 mm) — kopia wyprostowana, spójna z krawędziami nibu; idealny — bez zmian
+                verts = GeometryHelper.SquaredOrSame(GeometryHelper.GetPolylineVertices(pl));
                 outerHandle = pl.Handle.ToString();
             }
             inp.Outline = verts.Select(v => (v.X, v.Y)).ToList();
+            ctx.PickedHandle = XLink.Norm(slabId.Handle.ToString());
+            ctx.OuterHandle = XLink.Norm(outerHandle);
+            ctx.MinPoint = MinPoint(verts);
+            ctx.LookPt = lookPt;
 
             // Linia cięcia: pozioma albo pionowa (wg dłuższej składowej)
             inp.CutAlongX = Math.Abs(p2.X - p1.X) >= Math.Abs(p2.Y - p1.Y);
@@ -85,6 +104,11 @@ namespace BricsCadRc.Core
                 var dists = new List<(BlockReference br, BarData bar)>();
                 var outlines = new List<Polyline>();
                 var texts = new List<(Point2d p, string t)>();
+                var beamZones = new List<List<Point2d>>();   // strefy belek (RC-BEAM): teksty „450THK” to nie grubość płyty
+                // strefy belek z rekordem RC_BEAM (plan belek E5): handle, wierzchołki, punkt wewnątrz, parametry
+                var zoneRecs = new List<(string handle, List<Point2d> verts, Point2d inside, BeamParams p)>();
+                // K9: detale belek 1:25 — ANCHOR (kopia strefy): strefa, numer, wierzchołki
+                var anchors = new List<(string zone, int nr, List<Point2d> verts)>();
                 foreach (ObjectId oid in ms)
                 {
                     if (oid.IsErased) continue;
@@ -93,10 +117,28 @@ namespace BricsCadRc.Core
                     {
                         var bar = BarBlockEngine.ReadXData(br);
                         if (bar == null || Math.Abs(br.Rotation) > 1e-6 || Math.Abs(bar.Angle) > 1e-6) continue;
+                        // Pręty belki (BB / BT / BL, E5): do planera tylko jako pręty belki (rodzaj Beam — w pasie belki przeciętym
+                        // linią cięcia), bez wpływu na poziomy siatki płyty (dB1 / dT1) i UB płyty
                         dists.Add((br, bar));
                     }
                     else if (obj is Polyline pl && oid != outerId && GeometryHelper.IsEffectivelyClosed(pl))
+                    {
+                        // K9: ANCHOR detalu belki — nie obrys rzutu
+                        if (BeamStore.ReadDetail(pl) is var dd && dd != null)
+                        {
+                            if (dd.Value.role == BeamStore.RoleAnchor && !string.IsNullOrEmpty(dd.Value.zone))
+                                anchors.Add((dd.Value.zone, dd.Value.nr, GeometryHelper.GetPolylineVertices(pl)));
+                            continue;
+                        }
                         outlines.Add(pl);
+                        // strefa belki (RC-BEAM) albo polilinia ręczna belki (RC-BEAM-MANUAL, przed zamianą na strefę) — „450THK” w niej to nie grubość płyty
+                        if (BeamStore.IsBeamLayer(pl.Layer) || BeamStore.IsManualLayer(pl.Layer)) beamZones.Add(GeometryHelper.GetPolylineVertices(pl));
+                        if (BeamStore.IsZone(pl) && BeamStore.Read(pl) is BeamParams bp)
+                        {
+                            try { zoneRecs.Add((XLink.Norm(pl.Handle.ToString()), GeometryHelper.GetPolylineVertices(pl), BeamStore.Centroid(pl), bp)); }
+                            catch (System.Exception ex) { Log.Error("AutoRebar.PrepareSection.Beam", ex); }
+                        }
+                    }
                     else if (obj is MText mt)
                         texts.Add((new Point2d(mt.Location.X, mt.Location.Y), string.Join("\n", GaImportEngine.TextLines(mt))));
                     else if (obj is DBText dt)
@@ -107,7 +149,7 @@ namespace BricsCadRc.Core
                 var min0 = MinPoint(verts);
                 foreach (var pl in outlines)
                 {
-                    var v = GeometryHelper.GetPolylineVertices(pl);
+                    var v = GeometryHelper.SquaredOrSame(GeometryHelper.GetPolylineVertices(pl));   // jak FindBottomView
                     if (v.Count != verts.Count) continue;
                     var delta = MinPoint(v) - min0;             // rzut = wskazany + delta
                     if (delta.Length < 1.0 || !Congruent(v, verts, delta)) continue;
@@ -115,26 +157,59 @@ namespace BricsCadRc.Core
                     views.Add((delta, pl.Handle.ToString(), v));
                 }
 
+ // K9 (decyzja użytkownika): pręty belki w detalu 1:25 — rozkład ze znacznikiem strefy ANCHOR-a i środkiem w oknie
+                // detalu liczony w położeniu rzutu (pos − Shift); dalej jak rozkład na rzucie (− przesunięcie rzutu strefy). ctx.Views bez
+                // zmian — wejście planera jak z prętami na rzucie. ANCHOR nieprzystający do strefy (strefa zmieniona po detalu) — pominięty.
+                var detailOf = new Dictionary<string, (Vector2d shift, BeamDetailRules.Rect win)>(StringComparer.OrdinalIgnoreCase);
+                foreach (var (zh, anr, av) in anchors)
+                {
+                    var z = zoneRecs.FirstOrDefault(r => XLink.Same(r.handle, zh));
+                    if (z.verts == null) continue;
+                    var zview = views.FirstOrDefault(v => GeometryHelper.IsPointInsidePolygon(v.poly, z.inside));
+                    if (zview.poly == null) continue;   // strefa innej płyty
+                    // ANCHOR = strefa efektywna (rekord [38] „bez nibu” — przesunięta do krawędzi rzutu strefy)
+                    var zt = EffectiveZoneVerts(z.verts, z.p, zview.poly).Select(v => (v.X, v.Y)).ToList();
+                    var at = av.Select(v => (v.X, v.Y)).ToList();
+                    var s = BeamDetailRules.ShiftOf(at, zt);
+                    if (!BeamDetailRules.Congruent(at, zt, s))
+                    {
+                        ctx.Info.Add($"Detal belki {anr} nie pasuje do strefy {XLink.Norm(zh)} — ponów Beam; pręty tego detalu pominięte.");
+                        continue;
+                    }
+                    var w = BeamDetailRules.Window(zt, zview.poly.Select(v => (v.X, v.Y)).ToList()).Offset(s.X, s.Y).Inflate(BeamDetailRules.Margin);
+                    detailOf[XLink.Norm(zh)] = (new Vector2d(s.X, s.Y), w);
+                }
+
                 int nDist = 0;
-                var shapes = new Dictionary<string, (List<(double X, double Y)> pts, string code)?>(StringComparer.OrdinalIgnoreCase);
+                var shapes = new Dictionary<string, (List<(double X, double Y)> pts, string code, double[] dims)?>(StringComparer.OrdinalIgnoreCase);
                 foreach (var (br, bar) in dists)
                 {
                     var pos = new Point2d(br.Position.X, br.Position.Y);
+                    // decyzja: UB 03 przy belce w detalu (znacznik strefy) — tak samo jak pręty belki
+                    if (detailOf.Count > 0 && (BeamGeometry.IsBeamCode(bar.LayerCode) || SingleBarEngine.ExtractPosNr((bar.Mark ?? "").Split(' ')[0]) == NibUBPosNr)
+                        && BeamStore.ReadTag(br) is string btag && btag.Length > 0
+                        && detailOf.TryGetValue(XLink.Norm(btag), out var det))
+                    {
+                        var mid = BeamStore.MidOf(br, bar);
+                        if (det.win.Contains(mid.X, mid.Y)) pos -= det.shift;
+                    }
                     string tag = ReadSlabTag(br);
                     foreach (var (delta, handle, poly) in views)
                     {
                         bool inside = tag != null ? SameHandle(tag, handle) : GeometryHelper.IsPointInsidePolygon(poly, pos);
                         if (!inside) continue;
                         string pos2 = SectionPlanner.PosNrOf(bar.Mark);
+                        bool beamBar = BeamGeometry.IsBeamCode(bar.LayerCode);
                         inp.Dists.Add(new SectionPlanner.Dist
                         {
                             Mark = bar.Mark ?? "", PosNr = pos2, LayerCode = string.IsNullOrEmpty(bar.LayerCode) ? "B1" : bar.LayerCode,
-                            Kind = SectionPlanner.KindOf(bar.Mark, pos2, NibUBPosNr),
+                            Kind = beamBar ? SectionPlanner.DistKind.Beam : SectionPlanner.KindOf(bar.Mark, pos2, NibUBPosNr),
                             AlongX = !string.Equals(bar.Direction, "Y", StringComparison.OrdinalIgnoreCase),
                             X0 = pos.X - delta.X, Y0 = pos.Y - delta.Y,
                             LengthA = bar.LengthA, BarsSpan = bar.BarsSpan, Count = Math.Max(1, bar.Count),
                             Spacing = bar.Spacing > 0 ? bar.Spacing : 200, Diameter = bar.Diameter > 0 ? bar.Diameter : 10,
-                            ShapeCode = bar.ShapeCode ?? "00", SymbolSide = bar.SymbolSide ?? ""
+                            ShapeCode = bar.ShapeCode ?? "00", SymbolSide = bar.SymbolSide ?? "",
+                            SourceHandle = XLink.Norm(br.Handle.ToString()), SourceBarHandle = XLink.Norm(bar.SourceBarHandle)
                         });
                         // kopia pręta wzorcowego (RC_SINGLE_BAR) — kształt i wymiary jak w elewacji
                         var shape = SourceShape(db, tr, bar.SourceBarHandle, shapes);
@@ -143,12 +218,59 @@ namespace BricsCadRc.Core
                             var last = inp.Dists[inp.Dists.Count - 1];
                             last.ShapeLocal = shape.Value.pts;
                             last.ShapeCode = shape.Value.code;
+                            last.SourceDims = shape.Value.dims;
+                        }
+                        if (beamBar)
+                        {
+                            // belka (E5): skos rozkładu prętów L; U-bar (21) — drugie ramię o B − d dalej w stronę symbolu zagięcia
+                            // (pręty X: „Up” = +Y; pręty Y: „Up” = −X — jak BeamBent)
+                            var last = inp.Dists[inp.Dists.Count - 1];
+                            last.SkewStart = bar.SkewStart; last.SkewEnd = bar.SkewEnd;
+                            // E4b: pręty boczne — w rzucie po jednym na bok, opis / BBS: CountDisplay = 2 × liczba na bok
+                            if (bar.LayerCode == BeamGeometry.CodeSide && bar.Count > 0)
+                                last.Layers = Math.Max(1, bar.EffectiveCount / bar.Count);
+ // strzemiona 4-cięte (decyzja użytkownika): CountDisplay = 2 × Count → Layers 2 (dwa strzemiona w widoku);
+                            // 2-cięte (bez CountDisplay) — Layers 1, jak dotąd
+                            if (bar.LayerCode == BeamGeometry.CodeLinks && bar.Count > 0 && bar.EffectiveCount == 2 * bar.Count)
+                                last.Layers = 2;
+                            // K3: pionowe U-bary (BU) — bez drugiego ramienia w poprzek (przekrój U-barów pionowych: krok K6)
+                            if (last.ShapeCode == "21" && bar.LayerCode != BeamGeometry.CodeUBar
+                                && last.SourceDims != null && last.SourceDims.Length > 1 && last.SourceDims[1] > last.Diameter)
+                            {
+                                bool up = !string.Equals(bar.SymbolDirection, "Down", StringComparison.OrdinalIgnoreCase);
+                                int sgn = last.AlongX ? (up ? 1 : -1) : (up ? -1 : 1);
+                                last.PairOffset = sgn * (last.SourceDims[1] - last.Diameter);
+                            }
                         }
                         nDist++;
                         break;
                     }
                 }
                 ctx.Views = views.Select(v => v.delta).ToList();
+
+                // Belki (E5): strefy RC_BEAM rzutów tej płyty (punkt wewnątrz strefy w rzucie), przesunięte do rzutu wskazanego,
+                // bez duplikatów (ta sama strefa na rzucie dolnym i górnym — pierwszeństwo rzutu wskazanego) → pasy na linii cięcia
+                var placed = new List<List<Point2d>>();
+                foreach (var (delta, _, poly) in views)
+                    foreach (var z in zoneRecs)
+                    {
+                        if (!GeometryHelper.IsPointInsidePolygon(poly, z.inside)) continue;
+                        var zv = z.verts.Select(v => new Point2d(v.X - delta.X, v.Y - delta.Y)).ToList();
+                        if (placed.Any(o => o.Count == zv.Count && zv.All(v => o.Any(w => w.GetDistanceTo(v) < 1.0)))) continue;
+                        placed.Add(zv);
+                        var p = z.p;
+                        // rekord [38] „bez nibu”: pas belki do krawędzi płyty (bez nibu belki); domyślnie strefa bez zmian
+                        if (p.NoNib) zv = EffectiveZoneVerts(zv, p, verts);
+                        foreach (var (a, b) in SectionPlanner.CutIntervals(zv.Select(v => (v.X, v.Y)).ToList(), inp.CutAlongX, inp.CutCoord))
+                            inp.Beams.Add(new SectionPlanner.BeamBand
+                            {
+                                Handle = z.handle, S0 = a, S1 = b, Height = p.Height, NibWidth = p.NibWidth, NibHeight = p.NibHeight,
+                                Cover = p.CoverSide, CoverBottom = p.CoverBottom, StirrupDia = p.StirrupDia,
+                                StirrupA = BeamGeometry.StirrupHeight(p.Height, p.StirrupTopLayers, BeamSlabTopDia, BeamSlabTopDia,
+                                                                      BeamGeometry.DefaultCoverTop, p.CoverBottom),
+                                Params = BeamParamsText(p)
+                            });
+                    }
 
                 // Pale z innych rzutów (gdy na wskazanym ich nie ma)
                 if (inp.Piles.Count == 0)
@@ -162,27 +284,29 @@ namespace BricsCadRc.Core
                 foreach (var (p, t) in texts)
                 {
                     if (!views.Any(v => GeometryHelper.IsPointInsidePolygon(v.poly, p))) continue;
-                    if (ctx.ThicknessSource == null && SectionPlanner.ParseThickness(t) is double thk)
-                    { inp.Thickness = thk; ctx.ThicknessSource = Flat(t); }
+                    if (ctx.ThicknessSource == null && !beamZones.Any(z => GeometryHelper.IsPointInsidePolygon(z, p))
+                        && SectionPlanner.ParseThickness(t) is double thk)
+                    { inp.Thickness = thk; ctx.ThicknessSource = Flat(t); ctx.DescThickness = thk; }
                     if (ctx.SslSource == null && SectionPlanner.ParseSsl(t) is string ssl)
-                    { inp.Ssl = ssl; ctx.SslSource = Flat(t); }
+                    { inp.Ssl = ssl; ctx.SslSource = Flat(t); ctx.DescSsl = ssl; }
                 }
 
                 ctx.Info.Add($"Rzuty płyty: {views.Count}, rozkłady: {nDist}, nib: {(nib != null ? nib.Edges.Count + " krawędzi" : "brak")}, " +
-                             $"otwory: {inp.Holes.Count}, pale: {inp.Piles.Count}.");
+                             $"otwory: {inp.Holes.Count}, pale: {inp.Piles.Count}" +
+                             (inp.Beams.Count > 0 ? $", belki na linii cięcia: {inp.Beams.Count}." : "."));
                 if (ctx.ThicknessSource == null) ctx.Info.Add("Nie znaleziono grubości płyty w opisie (… THK SLAB) — przyjęto 225.");
                 if (ctx.SslSource == null) ctx.Info.Add("Nie znaleziono SSL w opisie płyty.");
             }
             return ctx;
         }
 
-        /// <summary>Oś pręta wzorcowego rozkładu (układ lokalny kształtu) i jego kod kształtu; null gdy brak.</summary>
-        private static (List<(double X, double Y)> pts, string code)? SourceShape(Database db, Transaction tr, string handle,
-            Dictionary<string, (List<(double X, double Y)> pts, string code)?> cache)
+        /// <summary>Oś pręta wzorcowego rozkładu (układ lokalny kształtu), jego kod kształtu i wymiary A–E; null gdy brak.</summary>
+        private static (List<(double X, double Y)> pts, string code, double[] dims)? SourceShape(Database db, Transaction tr, string handle,
+            Dictionary<string, (List<(double X, double Y)> pts, string code, double[] dims)?> cache)
         {
             if (string.IsNullOrEmpty(handle)) return null;
             if (cache.TryGetValue(handle, out var hit)) return hit;
-            (List<(double X, double Y)> pts, string code)? res = null;
+            (List<(double X, double Y)> pts, string code, double[] dims)? res = null;
             try
             {
                 var id = SingleBarEngine.HandleToObjectId(db, handle);
@@ -190,9 +314,12 @@ namespace BricsCadRc.Core
                     && SingleBarEngine.ReadBarXData(ent) is BarData sb && sb.LengthA > 0)
                 {
                     double d = sb.Diameter > 0 ? sb.Diameter : 10;
-                    var pts = BarGeometryBuilder.GetLocalPoints(sb.ShapeCode ?? "00",
-                        AxisParams(sb.ShapeCode, new[] { sb.LengthA, sb.LengthB, sb.LengthC, sb.LengthD, sb.LengthE }, d), d);
-                    if (pts != null && pts.Count >= 2) res = (pts, sb.ShapeCode ?? "00");
+                    // W4e (poprawka #13): GetLocalPoints przelicza wymiary zewnętrzne BS 8666 na oś (BarDimensionRules.ToAxis —
+                    // ramiona − d/2, wymiar poprzeczny U / spinki − d, łuk osi r + d/2) — dawne AxisParams usunięte (bez
+                    // podwójnego odejmowania); obrys pręta w widoku ma dokładnie wymiary z rysunku (UB 225: B = 140 po zewnętrznej).
+                    var dims = new[] { sb.LengthA, sb.LengthB, sb.LengthC, sb.LengthD, sb.LengthE };
+                    var pts = BarGeometryBuilder.GetLocalPoints(sb.ShapeCode ?? "00", (double[])dims.Clone(), d);
+                    if (pts != null && pts.Count >= 2) res = (pts, sb.ShapeCode ?? "00", dims);
                 }
             }
             catch (System.Exception ex) { Log.Error("AutoRebar.SourceShape", ex); }
@@ -200,25 +327,11 @@ namespace BricsCadRc.Core
             return res;
         }
 
-        /// <summary>
-        /// Wymiary BS 8666 są zewnętrzne (UB 225: B = 225 − 40 − 35 − 5 − 5 = 140 po zewnętrznej pręta) — do rysowania osi pręta
-        /// w przekroju: ramiona − d/2, wymiar poprzeczny U / spinki − d. Wtedy obrys pręta ma dokładnie wymiary z rysunku.
-        /// </summary>
-        private static double[] AxisParams(string code, double[] p, double d)
-        {
-            // 11, 13, 21 (i inne z listy wyboru): BarGeometryBuilder sam przelicza wymiary zewnętrzne na oś
-            var a = (double[])p.Clone();
-            switch (code ?? "00")
-            {
-                case "22":
-                    a[0] = Math.Max(1, a[0] - d / 2); a[1] = Math.Max(1, a[1] - d); a[2] = Math.Max(0, a[2] - d / 2);
-                    break;
-                case "12":
-                    a[0] = Math.Max(1, a[0] - d / 2); a[1] = Math.Max(1, a[1] - d / 2);
-                    break;
-            }
-            return a;
-        }
+        /// <summary>Parametry belki do odcisku przekroju (składnik BEAM — bez wpływu na rysunek; InvariantCulture).</summary>
+        private static string BeamParamsText(BeamParams p)
+            => string.Format(CultureInfo.InvariantCulture, "W{0:0.#}|L{1}@{2:0.#}|B{3}x{4}|T{5}x{6}|U{7}|S{8}|LAP{9:0.#}|MAX{10:0.#}|TL{11}",
+                             p.Width, p.StirrupDia, p.StirrupSpacing, p.BottomCount, p.BottomDia, p.TopCount, p.TopDia, p.UBarDia,
+                             p.StirrupShape ?? "", p.Lap, p.MaxLength, p.StirrupTopLayers);
 
         private static string Flat(string t) => System.Text.RegularExpressions.Regex.Replace(t ?? "", @"\s+", " ").Trim();
 
@@ -244,10 +357,41 @@ namespace BricsCadRc.Core
         /// <summary>
         /// Rysuje przekrój: <paramref name="topLeft"/> = lewy górny narożnik płyty (poziom SSL) na początku przekroju.
         /// Znaczniki przekroju na wszystkich rzutach płyty. Zwraca liczbę utworzonych obiektów.
+        /// rec ≠ null (bezpiecznik przekrojów): części dostają XData RC_SECTION_PART ([1] tytuł, [2] rola, [3] klucz, [4] GUID),
+        /// tytuł — RC_SECTION ([1] format, [2] GUID, [3] litera, [4] obrys wskazany, [5] obrys zewnętrzny, [6] sam tytuł) i Xrecord
+        /// NA_RC_SECTION (rec, z listą części). Geometria i kolejność obiektów — bez zmian (rec = null: dawny rysunek bez danych).
         /// </summary>
-        public static int DrawSection(Database db, SectionContext ctx, SectionPlanner.Result r, Point3d topLeft, string letter)
+        public static int DrawSection(Database db, SectionContext ctx, SectionPlanner.Result r, Point3d topLeft, string letter,
+                                      SectionRecord rec = null)
+            => DrawSectionWith(db, ctx, r, topLeft, letter, rec, null);
+
+        /// <summary>
+        /// Opcje rysowania przy RC_SECTION_UPDATE (bezpiecznik przekrojów, etap 3): przesunięcia opisów (indeks w Result.Labels),
+        /// tytułu i liter znaczników (klucz V&lt;rzut&gt;.P1|P2) względem pozycji domyślnych; DrawMarks = false — bez znaczników
+        /// na rzutach (przekrój bez znaczników, np. kopia). null = rysunek jak RC_SECTION (bit w bit).
+        /// </summary>
+        public sealed class SectionDrawOptions
+        {
+            public Dictionary<int, (double DX, double DY)> LabelOffsets = new Dictionary<int, (double DX, double DY)>();
+            public Vector2d TitleOffset;
+            public Dictionary<string, Vector2d> MarkTextOffsets = new Dictionary<string, Vector2d>(StringComparer.Ordinal);
+            public bool DrawMarks = true;
+        }
+
+        /// <summary>
+        /// <see cref="DrawSection"/> z opcjami RC_SECTION_UPDATE (<paramref name="opt"/> = null — bez zmian). Pozycje domyślne
+        /// (bez przesunięć) zapisywane w rekordzie: opisy i wierzchołek [0] betonu (PART …|x,y|rodzaj), tytuł (TITLEDEF) —
+        /// względem <paramref name="topLeft"/>.
+        /// </summary>
+        public static int DrawSectionWith(Database db, SectionContext ctx, SectionPlanner.Result r, Point3d topLeft, string letter,
+                                          SectionRecord rec, SectionDrawOptions opt)
         {
             int n = 0;
+            var parts = new List<(Entity e, string role, string key, (double X, double Y)? def, string kind)>();
+            string pRole = null, pKey = null;   // część dodawana przez Add (bezpiecznik); null = bez znacznika
+            (double X, double Y)? pDef = null;  // pozycja domyślna części względem topLeft (etap 3)
+            string pKind = "";
+            Entity titleEnt = null;
             double T = ctx.Input.Thickness;
             double ox = topLeft.X - r.UMin, oy = topLeft.Y;
             Point3d W(double u, double v) => new Point3d(ox + u, oy + v, 0);
@@ -280,7 +424,12 @@ namespace BricsCadRc.Core
                 {
                     ms.AppendEntity(e); tr.AddNewlyCreatedDBObject(e, true); n++;
                     if (e is DBText dbt) dbt.AdjustAlignment(db);
+                    if (rec != null && pRole != null) parts.Add((e, pRole, pKey, pDef, pKind));
                 }
+                void Tag(string role, string key) { pRole = role; pKey = key; pDef = null; pKind = ""; }
+                // pozycja domyślna względem topLeft: W(u, v) − topLeft = (u − UMin, v)
+                void TagDef(string role, string key, double u, double v, string kind) { Tag(role, key); pDef = (u - r.UMin, v); pKind = kind ?? ""; }
+                int idx = 0;
                 Polyline Pl(IList<(double U, double V)> pts, string layer, bool closed)
                 {
                     var pl = new Polyline { Layer = layer };
@@ -315,13 +464,25 @@ namespace BricsCadRc.Core
                 }
 
                 // Beton
-                foreach (var sg in r.Segments) Add(Pl(sg.Polygon, SectionSlabLayer, true));
+                idx = 0;
+                foreach (var sg in r.Segments)
+                {
+                    if (sg.Polygon.Count > 0) TagDef("SLAB", "SEG#" + idx++, sg.Polygon[0].U, sg.Polygon[0].V, "");
+                    else Tag("SLAB", "SEG#" + idx++);
+                    Add(Pl(sg.Polygon, SectionSlabLayer, true));
+                }
 
                 // Pręty w widoku i przekroju
+                idx = 0;
                 foreach (var b in r.Bars)
+                {
+                    Tag("BAR", "BAR#" + idx++ + "|" + b.PosNr);
                     Add(b.Outline != null && b.Outline.Count >= 4 ? Pl(b.Outline, SectionBarLayer, true) : Pl(b.Path, SectionBarLayer, false));
+                }
+                idx = 0;
                 foreach (var d in r.Dots)
                 {
+                    Tag("DOT", "DOT#" + idx++ + "|" + d.PosNr);
                     double q = d.Diameter / 4.0;
                     var pl = new Polyline { Layer = SectionBarLayer };
                     pl.AddVertexAt(0, new Point2d(ox + d.U - q, oy + d.V), 1, d.Diameter / 2.0, d.Diameter / 2.0);
@@ -331,14 +492,17 @@ namespace BricsCadRc.Core
                 }
 
                 // Pale: część w płycie przerywana, urwanie u dołu, oś
+                idx = 0;
                 foreach (var p in r.Piles)
                 {
+                    Tag("PILE", "PILE#" + idx++);
                     double l = p.U - p.Width / 2, rr = p.U + p.Width / 2;
+                    double pb = double.IsNaN(p.Base) ? -T : p.Base;   // spód betonu nad palem (belka E5: −H; bez belki = −T)
                     Add(Ln(l, p.Top, rr, p.Top, SectionPileLayer, "DASHED", 3));
-                    Add(Ln(l, -T, l, p.Top, SectionPileLayer, "DASHED", 3));
-                    Add(Ln(rr, -T, rr, p.Top, SectionPileLayer, "DASHED", 3));
-                    Add(Ln(l, -T, l, p.Bottom, SectionPileLayer));
-                    Add(Ln(rr, -T, rr, p.Bottom, SectionPileLayer));
+                    Add(Ln(l, pb, l, p.Top, SectionPileLayer, "DASHED", 3));
+                    Add(Ln(rr, pb, rr, p.Top, SectionPileLayer, "DASHED", 3));
+                    Add(Ln(l, pb, l, p.Bottom, SectionPileLayer));
+                    Add(Ln(rr, pb, rr, p.Bottom, SectionPileLayer));
                     const double bulge = 0.426;
                     var low = new Polyline { Layer = SectionPileLayer };
                     low.AddVertexAt(0, new Point2d(ox + l, oy + p.Bottom), bulge, 0, 0);
@@ -354,8 +518,10 @@ namespace BricsCadRc.Core
                 }
 
                 // Wymiary
+                idx = 0;
                 foreach (var dm in r.Dims)
                 {
+                    Tag("DIM", "DIM#" + idx++);
                     try
                     {
                         var dim = new RotatedDimension(dm.Vertical ? Math.PI / 2 : 0, W(dm.U1, dm.V1), W(dm.U2, dm.V2),
@@ -370,19 +536,44 @@ namespace BricsCadRc.Core
 
                 // Opisy numerów pozycji (ze strzałką dla prętów w widoku)
                 double minV = -T;
+                idx = 0;
                 foreach (var lb in r.Labels)
                 {
-                    Add(Txt(lb.Text, lb.U, lb.V, lb.Height, SectionTextLayer));
+                    int li = idx;
+                    string lk = "#" + idx++ + "|" + lb.Text;
+                    string kind = SectionLabelCarry.KindOf(lb.HasLeader, r.Dots.Any(d => d.TinNib && d.PosNr == lb.Text));
+                    TagDef("LBL", "LBL" + lk, lb.U, lb.V, kind);
+                    // RC_SECTION_UPDATE: ręczne przesunięcie opisu (etap 3); bez przesunięcia — dawne wyrażenia bit w bit
+                    (double DX, double DY) off = (0, 0);
+                    bool moved = opt != null && opt.LabelOffsets.TryGetValue(li, out off);
+                    Add(moved ? Txt(lb.Text, lb.U + off.DX, lb.V + off.DY, lb.Height, SectionTextLayer)
+                              : Txt(lb.Text, lb.U, lb.V, lb.Height, SectionTextLayer));
                     minV = Math.Min(minV, lb.V);
                     if (!lb.HasLeader) continue;
                     bool down = lb.LeaderV < lb.V;
                     double vStart = down ? lb.V - 10 : lb.V + lb.Height + 10;
                     double tip = lb.LeaderV, ah = down ? 40 : -40;
-                    Add(Ln(lb.U, vStart, lb.U, tip + ah, SectionTextLayer));
-                    var arrow = new Solid(W(lb.U, tip), W(lb.U - 9, tip + ah), W(lb.U + 9, tip + ah)) { Layer = SectionTextLayer };
-                    Add(arrow);
+                    Tag("LDR", "LDR" + lk);
+                    if (!moved)
+                    {
+                        Add(Ln(lb.U, vStart, lb.U, tip + ah, SectionTextLayer));
+                        var arrow = new Solid(W(lb.U, tip), W(lb.U - 9, tip + ah), W(lb.U + 9, tip + ah)) { Layer = SectionTextLayer };
+                        Tag("ARW", "ARW" + lk);
+                        Add(arrow);
+                        continue;
+                    }
+                    // tekst i początek leadera przesunięte; grot o dU tylko, gdy zostaje na pręcie tej pozycji
+                    double tu = SectionLabelCarry.LeaderTipU(lb.U, off.DX, r.Bars.Where(b => b.PosNr == lb.Text && b.Path.Count > 0)
+                                                                              .Select(b => (b.Path.Min(q => q.U), b.Path.Max(q => q.U))));
+                    Add(Ln(lb.U + off.DX, vStart + off.DY, tu, tip + ah, SectionTextLayer));
+                    var arrowM = new Solid(W(tu, tip), W(tu - 9, tip + ah), W(tu + 9, tip + ah)) { Layer = SectionTextLayer };
+                    Tag("ARW", "ARW" + lk);
+                    Add(arrowM);
                 }
                 foreach (var p in r.Piles) minV = Math.Min(minV, p.Bottom - 110);
+                // belka (E5): spód belki i wymiary pod nią (bez belki — beton i wymiary nie schodzą poniżej −T: bez zmian)
+                foreach (var sg in r.Segments) foreach (var q in sg.Polygon) minV = Math.Min(minV, q.V);
+                foreach (var dm in r.Dims) minV = Math.Min(minV, dm.Vertical ? Math.Min(dm.V1, dm.V2) : dm.LineV - 2 * SectionPlanner.TextHeight);
 
                 // Poziom SSL
                 if (r.SslMark.HasValue && !string.IsNullOrEmpty(r.SslText))
@@ -390,8 +581,11 @@ namespace BricsCadRc.Core
                     double tu = r.SslMark.Value.U;
                     var mark = Pl(new List<(double, double)> { (tu, 146), (tu, 0), (tu - 48, 47), (tu + 228, 47) }, SectionTextLayer, false);
                     mark.ColorIndex = 2;
+                    Tag("SSL", "SSL.MARK");
                     Add(mark);
+                    Tag("SSL", "SSL.LINE");
                     Add(Ln(tu - 56, 0, r.UMin - 15, 0, SectionTextLayer, color: 2));
+                    Tag("SSL", "SSL.TEXT");
                     var sslTxt = new MText
                     {
                         Contents = r.SslText, TextHeight = SectionPlanner.TextHeight, Layer = SectionTextLayer, TextStyleId = textStyle,
@@ -407,18 +601,28 @@ namespace BricsCadRc.Core
                     TextHeight = 4, Layer = SectionTitleLayer, TextStyleId = titleStyle,
                     Location = W((r.UMin + r.UMax) / 2, minV - 260), Attachment = AttachmentPoint.MiddleCenter
                 };
+                if (rec != null) rec.TitleDef = ((r.UMin + r.UMax) / 2 - r.UMin, minV - 260);
+                if (opt != null && opt.TitleOffset.Length > 1e-9)
+                    title.Location = title.Location + new Vector3d(opt.TitleOffset.X, opt.TitleOffset.Y, 0);   // tytuł przesunięty ręcznie
+                Tag(null, null);   // tytuł = głowa przekroju, nie część
                 Add(title);
+                titleEnt = title;
 
                 // Znaczniki przekroju na rzutach
                 var a = ctx.P2 - ctx.P1;
-                if (a.Length > 1e-6)
+                if (a.Length > 1e-6 && (opt == null || opt.DrawMarks))
                 {
                     a = a.GetNormal();
                     var nrm = ctx.Input.CutAlongX ? new Vector2d(0, ctx.Input.LookSign) : new Vector2d(ctx.Input.LookSign, 0);
+                    int vi = 0;
                     foreach (var delta in ctx.Views)
                     {
+                        int pi = 0;
                         foreach (var (p, dir) in new[] { (ctx.P1 + delta, a), (ctx.P2 + delta, -a) })
                         {
+                            // klucz V<rzut>.P1 / P2 — V0 = rzut wskazany (położenie cięcia przy przeliczeniu: wierzchołek [2])
+                            string mkKey = "V" + vi + ".P" + (++pi);
+                            Tag("MARK", mkKey);
                             var mk = new Polyline { Layer = SectionMarkLayer };
                             var t0 = p + nrm * 294; var t1 = p + dir * 83; var t2 = p + dir * 300;
                             mk.AddVertexAt(0, t1, 0, 0, 0);
@@ -427,6 +631,8 @@ namespace BricsCadRc.Core
                             mk.AddVertexAt(3, t2, 0, 0, 0);
                             Add(mk);
                             var lp = p + dir * 214 + nrm * 130;
+                            if (opt != null && opt.MarkTextOffsets.TryGetValue(mkKey, out var mo)) lp = lp + mo;   // litera przesunięta ręcznie
+                            Tag("MARKTXT", mkKey);
                             Add(new MText
                             {
                                 Contents = letter, TextHeight = 150, Layer = SectionMarkLayer, TextStyleId = titleStyle,
@@ -434,11 +640,239 @@ namespace BricsCadRc.Core
                                 Rotation = ctx.Input.CutAlongX ? 0 : Math.PI / 2   // litera wzdłuż linii cięcia (pionowe cięcie → obrót 90°)
                             });
                         }
+                        vi++;
                     }
                 }
+                Tag(null, null);
+                if (rec != null && titleEnt != null) WriteSectionData(tr, db, ctx, rec, titleEnt, parts);
                 tr.Commit();
             }
             return n;
+        }
+
+        // ── bezpiecznik przekrojów: dane przekroju (XData, Xrecord) ─────────────
+
+        public const string SectionTitleApp = "RC_SECTION";
+        public const string SectionPartApp  = "RC_SECTION_PART";
+        public const string SectionStatusLayer = "RC-SECTION-STATUS";
+        public const string RoleCloud = "CLOUD";
+
+        /// <summary>Zapis danych przekroju w transakcji rysowania: RegApp, XData części i tytułu, Xrecord rekordu (lista części).</summary>
+        private static void WriteSectionData(Transaction tr, Database db, SectionContext ctx, SectionRecord rec, Entity title,
+                                             List<(Entity e, string role, string key, (double X, double Y)? def, string kind)> parts)
+        {
+            EnsureRegApp(tr, db, SectionTitleApp);
+            EnsureRegApp(tr, db, SectionPartApp);
+            string th = XLink.Norm(title.Handle.ToString());
+            rec.Parts.Clear();
+            foreach (var (e, role, key, def, kind) in parts)
+            {
+                e.XData = PartXData(th, role, key, rec.Guid);
+                rec.Parts.Add(new SectionRecord.Part
+                    { Handle = XLink.Norm(e.Handle.ToString()), Role = role, Key = key, Def = def, Kind = kind ?? "" });
+            }
+            title.XData = TitleXData(rec.Guid, rec.Letter, ctx.PickedHandle, ctx.OuterHandle, th);
+            WriteRecord(tr, title, rec);
+        }
+
+        internal static ResultBuffer PartXData(string titleHandle, string role, string key, string guid)
+            => new ResultBuffer(
+                new TypedValue((int)DxfCode.ExtendedDataRegAppName, SectionPartApp),
+                XLink.Write(titleHandle),
+                new TypedValue((int)DxfCode.ExtendedDataAsciiString, role ?? ""),
+                new TypedValue((int)DxfCode.ExtendedDataAsciiString, key ?? ""),
+                new TypedValue((int)DxfCode.ExtendedDataAsciiString, guid ?? ""));
+
+        internal static ResultBuffer TitleXData(string guid, string letter, string picked, string outer, string self)
+            => new ResultBuffer(
+                new TypedValue((int)DxfCode.ExtendedDataRegAppName, SectionTitleApp),
+                new TypedValue((int)DxfCode.ExtendedDataInteger16, (short)SectionRecord.CurrentFormat),
+                new TypedValue((int)DxfCode.ExtendedDataAsciiString, guid ?? ""),
+                new TypedValue((int)DxfCode.ExtendedDataAsciiString, letter ?? ""),
+                XLink.Write(picked),
+                XLink.Write(outer),
+                XLink.Write(self));
+
+        /// <summary>Xrecord NA_RC_SECTION w słowniku rozszerzeń tytułu (nadpisuje poprzedni). Tytuł otwarty do zapisu.</summary>
+        internal static void WriteRecord(Transaction tr, Entity title, SectionRecord rec)
+        {
+            if (title.ExtensionDictionary.IsNull) title.CreateExtensionDictionary();
+            var dict = (DBDictionary)tr.GetObject(title.ExtensionDictionary, OpenMode.ForWrite);
+            var data = new ResultBuffer(rec.ToLines().Select(l => new TypedValue((int)DxfCode.Text, l)).ToArray());
+            if (dict.Contains(SectionRecord.XrecordName))
+            {
+                var old = (Xrecord)tr.GetObject(dict.GetAt(SectionRecord.XrecordName), OpenMode.ForWrite);
+                old.Data = data;
+                return;
+            }
+            var xr = new Xrecord { Data = data };
+            dict.SetAt(SectionRecord.XrecordName, xr);
+            tr.AddNewlyCreatedDBObject(xr, true);
+        }
+
+        /// <summary>Odczyt Xrecordu NA_RC_SECTION tytułu; null gdy brak / nie rekord.</summary>
+        internal static SectionRecord ReadRecord(Transaction tr, Entity title)
+        {
+            if (title == null || title.ExtensionDictionary.IsNull) return null;
+            var dict = tr.GetObject(title.ExtensionDictionary, OpenMode.ForRead) as DBDictionary;
+            if (dict == null || !dict.Contains(SectionRecord.XrecordName)) return null;
+            var xr = tr.GetObject(dict.GetAt(SectionRecord.XrecordName), OpenMode.ForRead) as Xrecord;
+            var arr = xr?.Data?.AsArray();
+            if (arr == null) return null;
+            return SectionRecord.Parse(arr.Select(tv => Convert.ToString(tv.Value, CultureInfo.InvariantCulture)));
+        }
+
+        /// <summary>Dane spoza planera do odcisku (punkt odniesienia = P1 cięcia, rzuty, litera, opis płyty, flagi nadpisania).</summary>
+        public static SectionFingerprint.Source SectionSourceOf(SectionContext ctx, string letter, bool thkOverridden, bool sslOverridden)
+            => new SectionFingerprint.Source
+            {
+                RefX = ctx.P1.X, RefY = ctx.P1.Y,
+                Views = ctx.Views.Select(v => (v.X, v.Y)).ToList(), Letter = letter ?? "",
+                DescThickness = ctx.DescThickness, ThkOverridden = thkOverridden,
+                DescSsl = ctx.DescSsl, SslOverridden = sslOverridden
+            };
+
+        /// <summary>
+        /// Rekord nowego przekroju (RC_SECTION, po oknie): parametry z ctx.Input, flagi nadpisania (P1: wartość ≠ opis płyty),
+        /// odcisk z policzonego planu. Części dopisuje DrawSection.
+        /// </summary>
+        public static SectionRecord BuildSectionRecord(SectionContext ctx, SectionPlanner.Result plan, string letter, Point3d topLeft)
+            => BuildSectionRecord(ctx, plan, letter, topLeft, null, null, null);
+
+        /// <summary>
+        /// Rekord przekroju; RC_SECTION_UPDATE (etap 3) podaje flagi nadpisania z poprzedniego rekordu (P1: nadpisanie zostaje)
+        /// i GUID przekroju (ten sam przekrój). null = jak RC_SECTION (flagi z porównania z opisem płyty, nowy GUID).
+        /// </summary>
+        public static SectionRecord BuildSectionRecord(SectionContext ctx, SectionPlanner.Result plan, string letter, Point3d topLeft,
+                                                       bool? thkOverridden, bool? sslOverridden, string guid)
+        {
+            var inp = ctx.Input;
+            bool thkOvr = thkOverridden ?? Math.Abs(inp.Thickness - (ctx.DescThickness ?? new SectionPlanner.Input().Thickness)) > 1e-6;
+            bool sslOvr = sslOverridden ?? !string.Equals((inp.Ssl ?? "").Trim(), (ctx.DescSsl ?? "").Trim(), StringComparison.Ordinal);
+            var st = SectionFingerprint.Build(inp, plan, SectionSourceOf(ctx, letter, thkOvr, sslOvr));
+            return new SectionRecord
+            {
+                Guid = string.IsNullOrEmpty(guid) ? System.Guid.NewGuid().ToString("D") : guid, Letter = letter ?? "",
+                P1 = (ctx.P1.X, ctx.P1.Y), P2 = (ctx.P2.X, ctx.P2.Y),
+                P1Rel = (ctx.P1.X - ctx.MinPoint.X, ctx.P1.Y - ctx.MinPoint.Y), P2Rel = (ctx.P2.X - ctx.MinPoint.X, ctx.P2.Y - ctx.MinPoint.Y),
+                CutAlongX = inp.CutAlongX, LookSign = inp.LookSign >= 0 ? 1 : -1, LookPt = (ctx.LookPt.X, ctx.LookPt.Y),
+                TopLeft = (topLeft.X, topLeft.Y, topLeft.Z), MinPoint = (ctx.MinPoint.X, ctx.MinPoint.Y),
+                Thickness = inp.Thickness, NibHeight = inp.NibHeight, CoverBottom = inp.CoverBottom, CoverTop = inp.CoverTop,
+                CoverNib = inp.CoverNib, UbTolerance = inp.UbTolerance, Ssl = inp.Ssl, DrawPiles = inp.DrawPiles,
+                DescThickness = ctx.DescThickness, DescSsl = ctx.DescSsl, ThkOverridden = thkOvr, SslOverridden = sslOvr,
+                Hash = st.Hash, ResultDigest = st.Digest, Version = st.Version, Components = st.Components
+            };
+        }
+
+        /// <summary>RC_SECTION: rekord (odcisk z policzonego planu) + rysunek z danymi przekroju. Zwraca liczbę obiektów.</summary>
+        public static int DrawSectionRecorded(Database db, SectionContext ctx, SectionPlanner.Result plan, Point3d topLeft, string letter)
+            => DrawSection(db, ctx, plan, topLeft, letter, BuildSectionRecord(ctx, plan, letter, topLeft));
+
+        /// <summary>Wynik przeliczenia przekroju (RC_SECTION_CHECK) — tylko odczyt.</summary>
+        public sealed class SectionRecompute
+        {
+            public SectionContext Ctx;
+            public SectionPlanner.Result Plan;
+            public SectionFingerprint.State State;
+            /// <summary>Błąd (obrys nie jest zamkniętą polilinią) — przekrój nie do przeliczenia.</summary>
+            public string Error;
+            /// <summary>Otwarta linia uskoku nibu, którą RC_SECTION by domknął (NibAutoClose.WouldClose).</summary>
+            public bool NibOpen;
+        }
+
+        /// <summary>
+        /// Przeliczenie przekroju tą samą drogą co tworzenie (PrepareSection → parametry z rekordu → Plan → odcisk). Tylko odczyt,
+        /// bez domykania nibu (wykrycie otwartego nibu bez zapisu). p1 / p2 — cięcie (ze znacznika rzutu wskazanego albo z rekordu),
+        /// strona patrzenia z rekordu. Grubość / SSL: nadpisane ręcznie — z rekordu, inaczej z bieżącego opisu płyty (P1).
+        /// </summary>
+        public static SectionRecompute RecomputeSection(Database db, SectionRecord rec, ObjectId slabId, Point2d p1, Point2d p2, string letter)
+        {
+            var res = new SectionRecompute();
+            if (slabId.IsNull || slabId.IsErased) { res.Error = "brak obrysu płyty"; return res; }
+            res.NibOpen = NibAutoClose.WouldClose(db, slabId);
+            bool alongX = Math.Abs(p2.X - p1.X) >= Math.Abs(p2.Y - p1.Y);
+            var look = alongX ? new Point2d(p1.X, p1.Y + rec.LookSign) : new Point2d(p1.X + rec.LookSign, p1.Y);
+            var ctx = PrepareSection(db, slabId, p1, p2, look);
+            if (ctx == null) { res.Error = "obrys płyty nie jest zamkniętą polilinią"; return res; }
+            var inp = ctx.Input;
+            if (rec.ThkOverridden) inp.Thickness = rec.Thickness;
+            if (rec.SslOverridden) inp.Ssl = rec.Ssl;
+            inp.NibHeight = rec.NibHeight; inp.CoverBottom = rec.CoverBottom; inp.CoverTop = rec.CoverTop;
+            inp.CoverNib = rec.CoverNib; inp.UbTolerance = rec.UbTolerance; inp.DrawPiles = rec.DrawPiles;
+            res.Ctx = ctx;
+            res.Plan = SectionPlanner.Plan(inp);
+            res.State = SectionFingerprint.Build(inp, res.Plan, SectionSourceOf(ctx, letter, rec.ThkOverridden, rec.SslOverridden));
+            return res;
+        }
+
+        // ── chmurka „NIEAKTUALNY” (warstwa niedrukowana) ─────────────────────
+
+        /// <summary>
+        /// Chmurka wokół przekroju (prostokąt <paramref name="ext"/> + 300 mm, łuki co ok. 400 mm) i tekst „NIEAKTUALNY” na warstwie
+        /// RC-SECTION-STATUS (kolor 1, Plottable = false — nie trafia do wydruku ani PDF, spike etapu 0). Części roli CLOUD
+        /// z powiązaniem do tytułu. Wołać w transakcji komendy (zablokowany dokument).
+        /// </summary>
+        public static void DrawCloud(Transaction tr, Database db, ObjectId titleId, string guid, Extents3d ext)
+        {
+            EnsureRegApp(tr, db, SectionPartApp);
+            EnsureStatusLayer(tr, db);
+            var ms = (BlockTableRecord)tr.GetObject(SymbolUtilityServices.GetBlockModelSpaceId(db), OpenMode.ForWrite);
+            string th = XLink.Norm(titleId.Handle.ToString());
+            const double margin = 300, step = 400;
+            double x0 = ext.MinPoint.X - margin, y0 = ext.MinPoint.Y - margin, x1 = ext.MaxPoint.X + margin, y1 = ext.MaxPoint.Y + margin;
+            var corners = new[] { new Point2d(x0, y0), new Point2d(x1, y0), new Point2d(x1, y1), new Point2d(x0, y1) };
+            var pl = new Polyline();
+            pl.SetDatabaseDefaults(db);
+            pl.Layer = SectionStatusLayer;
+            int vi = 0;
+            for (int i = 0; i < 4; i++)
+            {
+                var a = corners[i]; var b = corners[(i + 1) % 4];
+                int k = Math.Max(1, (int)Math.Ceiling(a.GetDistanceTo(b) / step));
+                for (int j = 0; j < k; j++)
+                    pl.AddVertexAt(vi++, a + (b - a) * ((double)j / k), -0.5, 0, 0);   // łuki na zewnątrz (obieg przeciwny do zegara)
+            }
+            pl.Closed = true;
+            ms.AppendEntity(pl);
+            tr.AddNewlyCreatedDBObject(pl, true);
+            pl.XData = PartXData(th, RoleCloud, "CLOUD", guid);
+
+            var txt = new MText();
+            txt.SetDatabaseDefaults(db);   // najpierw domyślne rysunku, potem właściwości
+            txt.Layer = SectionStatusLayer;
+            txt.Contents = "NIEAKTUALNY";
+            txt.TextHeight = 150;
+            txt.Location = new Point3d(x0 + 100, y1 - 100, 0);
+            txt.Attachment = AttachmentPoint.TopLeft;
+            ms.AppendEntity(txt);
+            tr.AddNewlyCreatedDBObject(txt, true);
+            txt.XData = PartXData(th, RoleCloud, "CLOUD.TXT", guid);
+        }
+
+        /// <summary>Usuwa chmurki (części roli CLOUD) — wołający podaje tylko potwierdzone obiekty. Zwraca liczbę usuniętych.</summary>
+        public static int RemoveCloud(Transaction tr, IEnumerable<ObjectId> cloudIds)
+        {
+            int n = 0;
+            foreach (var id in cloudIds)
+            {
+                if (id.IsNull || id.IsErased) continue;
+                tr.GetObject(id, OpenMode.ForWrite).Erase();
+                n++;
+            }
+            return n;
+        }
+
+        private static void EnsureStatusLayer(Transaction tr, Database db)
+        {
+            var lt = (LayerTable)tr.GetObject(db.LayerTableId, OpenMode.ForRead);
+            if (lt.Has(SectionStatusLayer)) return;
+            lt.UpgradeOpen();
+            var rec = new LayerTableRecord
+            {
+                Name = SectionStatusLayer, Color = Color.FromColorIndex(ColorMethod.ByAci, 1), IsPlottable = false
+            };
+            lt.Add(rec);
+            tr.AddNewlyCreatedDBObject(rec, true);
         }
 
         public const string SectionOwnDimStyle = "RC SECTION 1-20";

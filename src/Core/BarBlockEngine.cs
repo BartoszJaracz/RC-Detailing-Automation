@@ -303,7 +303,7 @@ namespace BricsCadRc.Core
         // ── Symbol category lookup ─────────────────────────────────────────
 
         private static readonly HashSet<string> _linkCodes =
-            new HashSet<string> { "51","63","33","34","35","36","41","47" };   // 46 = crank (otwarty)
+            new HashSet<string> { "51","63","34","35","36","41","46","47" };
         private static readonly HashSet<string> _ubarCodes =
             new HashSet<string> { "21","13","12","22","23","24","25","26" };
         private static readonly HashSet<string> _lbarCodes =
@@ -623,12 +623,18 @@ namespace BricsCadRc.Core
                 : 1;
             if (newCount < 1) newCount = 1;
 
+            // belka: pręty boczne BS (E4b — w rzucie po jednym na bok, CountDisplay = liczba w rzucie × liczba na bok) i pręty
+            // podłużne B+T (BM, K3 — w rzucie jedna warstwa, CountDisplay = 2 × liczba, opis „2x4”); po zmianie liczby gripem
+            // krotność zostaje (pozostałe kody — jak dotąd: reset)
+            int perDrawn = BarLabelRules.KeepsMultiplicity(bar.LayerCode) && bar.CountDisplay.HasValue && bar.Count > 0
+                ? Math.Max(1, bar.CountDisplay.Value / bar.Count) : 1;
+
             bar.Count    = newCount;
             bar.BarsSpan = newBarsSpan;
             if (newSkewStart.HasValue) bar.SkewStart = newSkewStart.Value;
             if (newSkewEnd.HasValue)   bar.SkewEnd   = newSkewEnd.Value;
 
-            bar.CountDisplay = null;  // reset count override po stretch — EffectiveCount = canonical Count
+            bar.CountDisplay = perDrawn > 1 ? newCount * perDrawn : (int?)null;  // reset count override po stretch — EffectiveCount = canonical Count (BS: krotność)
 
             BarData.PromoteMarkIfPurePrefix(bar);
 

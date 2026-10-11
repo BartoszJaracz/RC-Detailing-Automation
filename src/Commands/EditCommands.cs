@@ -399,10 +399,10 @@ namespace BricsCadRc.Commands
             var db  = doc.Database;
             var ed  = doc.Editor;
 
-            // 1. Wybór rozkładu (RC_BAR_BLOCK) — symbol końca jest cechą rozkładu, pręt (polilinia)
-            //    nie ma go w danych RC_SINGLE_BAR
+            // 1. Wybór rozkładu (RC_BAR_BLOCK) — symbol końca jest cechą rozkładu (poprawka #10);
+            //    pręt (polilinia / pręt-blok) nie ma go w danych RC_SINGLE_BAR
             var selOpts = new PromptEntityOptions("\nWybierz rozkład: ");
-            selOpts.SetRejectMessage("\nTo nie jest pręt RC.");
+            selOpts.SetRejectMessage("\n[RC] To nie jest rozkład RC.");
             selOpts.AddAllowedClass(typeof(Polyline),        true);
             selOpts.AddAllowedClass(typeof(BlockReference),  true);
             var selRes = ed.GetEntity(selOpts);
@@ -410,31 +410,30 @@ namespace BricsCadRc.Commands
 
             BarData  barData    = null;
             ObjectId targetId   = ObjectId.Null;
-            bool     isBarBlock = false;
 
             using (var tr = db.TransactionManager.StartTransaction())
             {
                 var ent = tr.GetObject(selRes.ObjectId, OpenMode.ForRead) as Entity;
-                if (ent is BlockReference br)
-                {
-                    targetId   = ResolveBarBlock(ent, tr);
-                    if (!targetId.IsNull)
-                    {
-                        var brT = tr.GetObject(targetId, OpenMode.ForRead) as BlockReference;
-                        barData    = brT != null ? BarBlockEngine.ReadXData(brT) : null;
-                        isBarBlock = true;
-                    }
-                }
-                else if (ent is Polyline poly && SingleBarEngine.ReadBarXData(poly) != null)
+                var kind = BarEntity.KindOf(ent);
+                if (kind == BarKind.Polyline || kind == BarKind.Block)
                 {
                     tr.Commit();
                     ed.WriteMessage("\n[RC] Symbol końca ustawia się na rozkładzie — wskaż rozkład, nie pręt.");
                     return;
                 }
+                if (ent is BlockReference)
+                {
+                    targetId = ResolveBarBlock(ent, tr);
+                    if (!targetId.IsNull)
+                    {
+                        var brT = tr.GetObject(targetId, OpenMode.ForRead) as BlockReference;
+                        barData = brT != null ? BarBlockEngine.ReadXData(brT) : null;
+                    }
+                }
                 tr.Commit();
             }
 
-            if (barData == null || targetId.IsNull || !isBarBlock)
+            if (barData == null || targetId.IsNull)
             {
                 ed.WriteMessage("\nWybrany obiekt nie zawiera danych pręta RC.");
                 return;
@@ -689,7 +688,7 @@ namespace BricsCadRc.Commands
                     if (obj is DBText txt)
                     {
                         txt.UpgradeOpen();
-                        txt.TextString = $"{bar.EffectiveCount} {bar.Mark}";
+                        txt.TextString = $"{bar.CountText} {bar.Mark}";
                         break;  // tylko pierwszy DBText
                     }
                 }
@@ -945,7 +944,7 @@ namespace BricsCadRc.Commands
 
         /// <summary>
         /// RC_SCALE_ANNOT — ustawia wizualną skalę opisu rozkładu (tekst, doty, strzałki, zakończenia prętów).
-        /// Skala 1:50 = factor 1.0 (domyślna). 1:25 = 2.0 (dwa razy większy). 1:100 = 0.5.
+        /// Skala 1:50 = factor 1.0 (domyślna). Factor = mianownik / 50: 1:25 = 0.5 (opis o połowę mniejszy w modelu — na papierze 1:25 ten sam), 1:100 = 2.0.
         /// </summary>
         [CommandMethod("RC_SCALE_ANNOT", CommandFlags.Modal)]
         public void RcScaleAnnot()

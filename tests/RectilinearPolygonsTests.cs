@@ -181,9 +181,13 @@ namespace BricsCadRc.Tests
             var outl = Box(550118, 47972, 555611, 58475);
             var an = BeamGeometry.Analyze(zone, outl);
             Assert.That(an.Segments.Count(s => !s.Manual), Is.EqualTo(3));
-            // B1 (pręty X): górna noga równoległa — odcięcie do x = 553336 (koniec wewnętrzny, bez wydłużenia), y od 57705
+ // B1 (pręty X): górna noga równoległa —: na końcu wewnętrznym (x = 553336) pręty siatki kotwią się w belce
+            // na 450 (H10) → odcięcie do x = 553336 − 450 − 40 = 552846, y od 57705
             var b1 = RectilinearPolygons.Union(BeamGeometry.MeshCutRects(an, top: false, barsAlongX: true, d: 10));
-            Assert.That(RectilinearPolygons.Inside(b1, 553000, 57800), Is.True);
+            Assert.That(BeamGeometry.MeshAnchorIntoBeam(10), Is.EqualTo(450));
+            Assert.That(BeamGeometry.MeshAnchorIntoBeam(12), Is.EqualTo(550));
+            Assert.That(RectilinearPolygons.Inside(b1, 552800, 57800), Is.True);
+            Assert.That(RectilinearPolygons.Inside(b1, 552900, 57800), Is.False, "kotwienie w belce 450 za końcem wewnętrznym");
             Assert.That(RectilinearPolygons.Inside(b1, 553400, 57800), Is.False, "za końcem wewnętrznym — siatka");
             Assert.That(RectilinearPolygons.Inside(b1, 552000, 57700), Is.False, "pierwszy pręt 40 + d od lica 57715");
             Assert.That(RectilinearPolygons.Inside(b1, 552000, 57706), Is.True);

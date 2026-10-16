@@ -213,7 +213,7 @@ namespace BricsCadRc.Tests
             var inp = SectionPlannerGoldenTests.CaseBeam();
             inp.Dists.Single(d => d.PosNr == "07").Layers = 1;
             Assert.That(SectionPlannerGoldenTests.Dump(SectionPlanner.Plan(inp)), Is.EqualTo(a));
-            Assert.That(SectionPlanner.Version, Is.EqualTo(5));   // bez odsunięcia zakładów
+            Assert.That(SectionPlanner.Version, Is.EqualTo(6));   // (5: bez odsunięcia zakładów)
         }
     }
 }

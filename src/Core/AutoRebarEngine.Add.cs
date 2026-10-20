@@ -416,6 +416,7 @@ namespace BricsCadRc.Core
                 dims.Add((P(lineA, eC), P(lineA, bC), P(lineA - DimOff, (eC + bC) / 2), rotAcross));
             }
 
+            RcTemplateEngine.EnsureStyles(db);   // styl wymiarów ADD (DEMOCLIENT-1-50 RC) — w wersji bazowej brak → wymiary niewidoczne 
             try
             {
                 using var tr = db.TransactionManager.StartTransaction();

@@ -76,5 +76,14 @@ namespace BricsCadRc.Tests
         [TestCase("PLOT 326", null, false)]
         public void MapPlotMatches(string map, string? slab, bool expected)
             => Assert.That(PlotLabelRules.MapPlotMatches(map, slab!), Is.EqualTo(expected));
+
+        // decyzja: płyty połączone belkami GB w jednym obrysie — jedna pozycja listy Prepare GA
+        [TestCase("PLOT 104|PLOT 105-106|PLOT 107", "PLOT 104-107")]
+        [TestCase("PLOT 12|PLOTS 10-11", "PLOT 10-12")]
+        [TestCase("PLOT 5", "PLOT 5")]
+        [TestCase("PLOT 104|GARAGE 12", "PLOT 104 + GARAGE 12")]
+        [TestCase("PLOT 3A|PLOT 4", "PLOT 3A + PLOT 4")]
+        public void MergeLabels(string joined, string expected)
+            => Assert.That(PlotLabelRules.MergeLabels(joined.Split('|')), Is.EqualTo(expected));
     }
 }

@@ -34,6 +34,26 @@ namespace BricsCadRc.Tests
         }
 
         [Test]
+        public void Plot162_TabWithCollinearVertex()
+        {
+            // uwaga: PLOT 162 (GA 157-162) — dolny języczek 600 × 275 z wierzchołkiem współliniowym (…677.437, −368522.199)
+            var poly = P(973805.175, -360072.148, 973805.175, -369512.148, 966952.675, -369512.148, 966952.675, -369042.559,
+                         966677.437, -369042.559, 966677.437, -368522.199, 966677.437, -368442.559, 966952.675, -368442.559,
+                         966952.675, -363182.225, 966677.437, -363182.225, 966677.437, -362582.225, 966952.675, -362582.225,
+                         966952.675, -360072.148, 973805.175, -360072.148);
+            var tabs = CantileverRules.FindTabs(poly);
+            Assert.That(tabs.Count, Is.EqualTo(2));
+            Assert.That(tabs.All(t => Math.Abs(t.Shape.Width - 600) < 1 && Math.Abs(t.Shape.Depth - 275.238) < 1), Is.True);
+            Assert.That(tabs.All(t => t.IdxE0 >= 0 && t.IdxE1 >= 0), Is.True);
+            var clean = CantileverRules.RemoveTabs(poly, tabs);
+            Assert.That(clean.Count, Is.EqualTo(4), "prostokąt bez języczków i bez punktu współliniowego");
+            Assert.That(clean.Any(q => q.X < 966900), Is.False);
+            // rekord: te same języczki odnajdowane w obrysie (RecordedTabs → FindTabs)
+            var eff = CantileverRules.EffectiveOutline(poly, tabs.Select(t => CantileverRules.TabRec.Of(t.Shape)));
+            Assert.That(eff.Count, Is.EqualTo(4));
+        }
+
+        [Test]
         public void BayWindowAndSmallNotch_NotCantilevers()
         {
             // występ okna 2128 × 788 (PLOT 13-14) i wcięcie 645 × 100 (BLOCK D) — nie wsporniki

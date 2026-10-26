@@ -105,7 +105,15 @@ namespace BricsCadRc.Commands
                     ed.WriteMessage($"\n{T} Wskazany obrys to rzut GÓRNY — wskaż obrys rzutu DOLNEGO. Przerwano.\n");
                     return;
                 }
+                // grupa płyt (uwaga, PLOT 157-162): wsporniki wszystkich płyt grupy jednym poleceniem
+                var others = GroupPick.Others(ed, doc.Database, r.ObjectId, T);
+                if (others == null) return;
                 AutoRebarEngine.GenerateCantilevers(doc, r.ObjectId);
+                foreach (var g in others)
+                {
+                    ed.WriteMessage($"\n{T} ── {g.member} ──");
+                    AutoRebarEngine.GenerateCantilevers(doc, g.bottom);
+                }
                 ed.WriteMessage("\n");
             }
             catch (System.Exception ex)

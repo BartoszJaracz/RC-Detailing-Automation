@@ -36,15 +36,20 @@ namespace BricsCadRc.Commands
             try
             {
                 src = GaImportEngine.ReadSource(fd.FileName, warnings);
-                int k = 0;
+                var chosen = new List<GaImportEngine.GaPlot> { src.Plots[0] };
                 if (src.Plots.Count > 1)
                 {
+                    // wymaganie (PLOT 157-162): kilka płyt naraz — Ctrl / Shift albo „Zaznacz wszystkie” → jeden rysunek RC
                     var dlg = new PunchingPlotPickerDialog(src.Plots.Select(p => p.ToString()).ToList(), 0,
-                        "Rysunek GA — wybierz płytę (PLOT / GARAGE)", "Płyty znalezione w pliku GA.");
+                        "Rysunek GA — wybierz płytę (PLOT / GARAGE)",
+                        "Płyty znalezione w pliku GA. Kilka płyt naraz (jeden rysunek RC): Ctrl / Shift + klik albo „Zaznacz wszystkie”.",
+                        multiSelect: true);
                     if (Application.ShowModalWindow(dlg) != true) return;
-                    k = dlg.SelectedIndex;
+                    List<int> idx = dlg.SelectedIndices;
+                    if (idx.Count == 0) return;
+                    chosen = idx.Select(i => src.Plots[i]).ToList();
                 }
-                var plot = src.Plots[k];
+                var plot = GaImportEngine.Group(chosen);
 
                 // decyzja: Drawn / Checked do arkusza RC (A1-BL i tabela rewizji By / Chkd), podpowiedź = ostatnie wpisane
  // okno zamiast linii poleceń (w linii poleceń podpowiedź łapała resztki kolejki, np. „'._ZOOM”)

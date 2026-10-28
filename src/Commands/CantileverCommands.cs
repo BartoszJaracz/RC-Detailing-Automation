@@ -99,16 +99,17 @@ namespace BricsCadRc.Commands
                 peo.AddAllowedClass(typeof(Polyline), true);
                 var r = ed.GetEntity(peo);
                 if (r.Status != PromptStatus.OK) return;
-                var outer = NibDetector.OuterOf(doc.Database, r.ObjectId);
+                var picked = GaImportEngine.ResolveSlabPick(doc.Database, r.ObjectId, r.PickedPoint);   // obrys GA szeregu 
+                var outer = NibDetector.OuterOf(doc.Database, picked);
                 if (AutoRebarEngine.IsTopView(doc.Database, outer))
                 {
                     ed.WriteMessage($"\n{T} Wskazany obrys to rzut GÓRNY — wskaż obrys rzutu DOLNEGO. Przerwano.\n");
                     return;
                 }
                 // grupa płyt (uwaga, PLOT 157-162): wsporniki wszystkich płyt grupy jednym poleceniem
-                var others = GroupPick.Others(ed, doc.Database, r.ObjectId, T);
+                var others = GroupPick.Others(ed, doc.Database, picked, T);
                 if (others == null) return;
-                AutoRebarEngine.GenerateCantilevers(doc, r.ObjectId);
+                AutoRebarEngine.GenerateCantilevers(doc, picked);
                 foreach (var g in others)
                 {
                     ed.WriteMessage($"\n{T} ── {g.member} ──");

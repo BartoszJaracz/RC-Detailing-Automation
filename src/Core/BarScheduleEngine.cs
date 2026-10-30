@@ -116,7 +116,7 @@ namespace BricsCadRc.Core
                     if (!BarBlockEngine.IsAnnotAlive(db, barBlock.AnnotHandle)) continue;
 
                     if (byHandle.TryGetValue(barBlock.SourceBarHandle, out var entry))
-                        entry.TotalCount += barBlock.EffectiveCount;
+                        entry.TotalCount += barBlock.BbsCount;   // × elementy (pile cap NNo.)
                 }
 
                 // Krok 3 — usuń pręty bez rozkładów (nie pojawiają się w zestawieniu)

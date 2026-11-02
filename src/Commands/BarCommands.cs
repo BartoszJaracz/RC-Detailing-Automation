@@ -991,13 +991,24 @@ namespace BricsCadRc.Commands
                                     ? new Point3d(distCenter.X, Math.Max(lo, Math.Min(hi, c.Y)), 0)    // X-bars: linia rozkładu pionowa
                                     : new Point3d(Math.Max(lo, Math.Min(hi, c.X)), distCenter.Y, 0);   // Y-bars: linia rozkładu pozioma
                             }
+                            // uwaga: rozkład standardowy (kursor poza zakresem linii rozkładu — nad / pod nią) dawał skośny
+                            // odcinek od końca linii do kursora i ORTHO nie działało — wtedy pierwszy odcinek idzie PROSTO wzdłuż linii rozkładu
+                            // (przedłużenie, jak dawniej); kursor obok linii (w zakresie) — prostopadle, jak dotąd
+                            Point3d Along(Point3d c)
+                            {
+                                double lo = minFixed, hi = lo + barsSpan;
+                                double a = horizontal ? c.Y : c.X;
+                                if (a >= lo && a <= hi) return c;
+                                return horizontal ? new Point3d(distCenter.X, a, 0) : new Point3d(a, distCenter.Y, 0);
+                            }
                             if (slideFoot) ptOpts.UseBasePoint = false;   // gumka BricsCAD od stałego punktu — zamiast niej podgląd ze stopą
                             PointMonitorEventHandler monitor = (s, ev) =>
                             {
                                 try
                                 {
                                     var pts0 = slideFoot ? new List<Point3d> { Foot(ev.Context.ComputedPoint) } : leaderWcsPts;
-                                    drawer.UpdatePreview(previewPrefix.Concat(pts0).ToList(), ev.Context.ComputedPoint);
+                                    var cur = slideFoot ? Along(ev.Context.ComputedPoint) : ev.Context.ComputedPoint;
+                                    drawer.UpdatePreview(previewPrefix.Concat(pts0).ToList(), cur);
                                     Application.UpdateScreen();
                                 }
                                 catch (System.Exception logEx) { Log.Error("BarCommands.RunAnnotationFlow", logEx); }
@@ -1011,7 +1022,7 @@ namespace BricsCadRc.Commands
                             if (ptRes.Status == PromptStatus.Cancel) { drawer.Clear(); return false; }
                             if (ptRes.Status != PromptStatus.OK) break;
                             if (slideFoot) leaderWcsPts[0] = Foot(ptRes.Value);
-                            leaderWcsPts.Add(ptRes.Value);
+                            leaderWcsPts.Add(slideFoot ? Along(ptRes.Value) : ptRes.Value);
                         }
                         drawer.Clear();
                     }

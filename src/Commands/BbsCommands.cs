@@ -75,7 +75,11 @@ namespace BricsCadRc.Commands
                                         : notes.ThicknessMm.HasValue ? $"typ z grubości płyty {notes.ThicknessMm} mm." : "typ domyślny.");
 
                 // 4) bezpiecznik przekrojów: nieaktualne przekroje → pytanie Tak / Nie (tryb bez okien: komunikat)
-                if (!SectionGuard.ConfirmBeforeOutput(doc, "BBS")) { ed.WriteMessage($"\n{T} Anulowano.\n"); return; }
+                // + kontrola numeracji prętów (wymaganie): luki, te same pręty pod różnymi numerami, jeden numer — kilka prętów
+                var numbering = BbsNumberingCheck.Check(db);
+                foreach (var n in numbering) ed.WriteMessage($"\n{T} {n}");
+                if (!SectionGuard.ConfirmBeforeOutput(doc, "BBS", numbering, $"Numeracja prętów ({numbering.Count}):"))
+                { ed.WriteMessage($"\n{T} Anulowano.\n"); return; }
 
                 // 5) dialog
                 string suggested = BbsXlsGenerator.SuggestOutputPath(doc.Name);

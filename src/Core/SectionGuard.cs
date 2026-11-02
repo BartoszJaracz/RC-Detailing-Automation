@@ -130,41 +130,56 @@ namespace BricsCadRc.Core
         /// true = kontynuować (brak nieaktualnych przekrojów, użytkownik wybrał „Tak” albo tryb bez okien). what — co wydajemy
         /// (np. „BBS”). Wołać z komendy (zablokowany dokument — synchronizacja chmurek zapisuje).
         /// </summary>
-        public static bool ConfirmBeforeOutput(Document doc, string what)
+        public static bool ConfirmBeforeOutput(Document doc, string what, IList<string> extra = null, string extraHead = null)
         {
             LastMessages.Clear();
             if (doc == null) return true;
             var db = doc.Database;
             try
             {
-                var sw = Stopwatch.StartNew();
-                if (!SectionStore.HasRegApps(db)) return true;
-                var infos = SectionStore.CheckAll(db, includeLegacy: false);
-                SectionStore.SyncClouds(db, infos);
-                sw.Stop();
-                Log.Info($"SectionGuard.ConfirmBeforeOutput({what}): przekrojów {infos.Count}, {sw.ElapsedMilliseconds} ms.");
+                var lines = new List<string>();
+                string head = null;
+                if (SectionStore.HasRegApps(db))
+                {
+                    var sw = Stopwatch.StartNew();
+                    var infos = SectionStore.CheckAll(db, includeLegacy: false);
+                    SectionStore.SyncClouds(db, infos);
+                    sw.Stop();
+                    Log.Info($"SectionGuard.ConfirmBeforeOutput({what}): przekrojów {infos.Count}, {sw.ElapsedMilliseconds} ms.");
+                    var bad = Bad(infos);
+                    if (bad.Count > 0)
+                    {
+                        lines = Lines(bad);
+                        head = $"Przekroje nieaktualne / do sprawdzenia ({bad.Count}) — sprawdź RC_SECTION_CHECK:";
+                    }
+                }
+ // (wymaganie): w tym samym oknie inne uwagi przed wydaniem (RC_BBS — numeracja prętów)
+                bool hasExtra = extra != null && extra.Count > 0;
+                if (head == null && !hasExtra) return true;
 
-                var bad = Bad(infos);
-                if (bad.Count == 0) return true;
-
-                var lines = Lines(bad);
-                string head = $"Przekroje nieaktualne / do sprawdzenia ({bad.Count}) — sprawdź RC_SECTION_CHECK:";
-                LastMessages.Add(head);
-                LastMessages.AddRange(lines);
+                var text = new List<string>();
+                if (head != null) { text.Add(head); text.AddRange(lines); }
+                if (hasExtra)
+                {
+                    if (text.Count > 0) text.Add("");
+                    text.Add(extraHead ?? "Uwagi:");
+                    text.AddRange(extra);
+                }
+                LastMessages.AddRange(text);
 
                 if (ScriptMode.IsNonInteractive())
                 {
-                    doc.Editor.WriteMessage($"\n{Prefix} UWAGA: {head}");
-                    foreach (var l in lines) doc.Editor.WriteMessage($"\n{Prefix}   {l}");
+                    foreach (var l in text) doc.Editor.WriteMessage($"\n{Prefix} {l}");
                     doc.Editor.WriteMessage($"\n{Prefix} {what}: tryb bez okien — dalej bez pytania.\n");
                     LastMessages.Add(what + ": tryb bez okien — dalej bez pytania.");
                     return true;
                 }
                 // okno modalne z właścicielem = główne okno BricsCAD (ShowModalWindow), jak inne potwierdzenia wtyczki
-                var dlg = new BricsCadRc.Dialogs.TextConfirmDialog("Przekroje nieaktualne",
-                    head + "\n\n" + string.Join("\n", lines) + $"\n\nKontynuować ({what})?", "Tak, kontynuuj", "Nie") { Width = 620, Height = 360 };
+                string title = head != null ? "Przekroje nieaktualne" : "Do sprawdzenia przed " + what;
+                var dlg = new BricsCadRc.Dialogs.TextConfirmDialog(title,
+                    string.Join("\n", text) + $"\n\nKontynuować ({what})?", "Tak, kontynuuj", "Nie") { Width = 720, Height = 420 };
                 bool go = Application.ShowModalWindow(dlg) == true;
-                if (!go) doc.Editor.WriteMessage($"\n{Prefix} {what}: przerwano — przekroje nieaktualne.\n");
+                if (!go) doc.Editor.WriteMessage($"\n{Prefix} {what}: przerwano — " + (head != null ? "przekroje nieaktualne" : "uwagi do sprawdzenia") + ".\n");
                 return go;
             }
             catch (System.Exception ex)

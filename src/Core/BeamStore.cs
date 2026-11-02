@@ -49,7 +49,33 @@ namespace BricsCadRc.Core
         public const int SlabIdx = 6;     // RC_BEAM [6] obrys płyty (CloneRemap)
         public const int TagIdx = 1;      // RC_AUTOREBAR_BEAM [1] strefa (CloneRemap)
 
-        public static bool IsBeamLayer(string layer) => string.Equals(layer, LayerName, StringComparison.OrdinalIgnoreCase);
+        public static bool IsBeamLayer(string layer) => string.Equals(layer, LayerName, StringComparison.OrdinalIgnoreCase)
+                                                     || string.Equals(layer, AuxLayerName, StringComparison.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// Warstwa pomocnicza stref (uwaga, APARTMENT-TEST screen 3: „fioletowe obramówki — może warstwa niewidoczna,
+        /// odblokowana jedną komendą”): strefy belek z pogrubienia w narożniku — wyłączona i niedrukowana; RC_ZONES włącza / wyłącza
+        /// (razem z RC-CANTILEVER). Strefa na tej warstwie jest strefą belki jak na RC-BEAM.
+        /// </summary>
+        public const string AuxLayerName = "RC-BEAM-AUX";
+
+        /// <summary>Warstwa pomocnicza (magenta, wyłączona, niedrukowana) — tworzona przy pierwszym użyciu; istniejąca bez zmian.</summary>
+        public static void EnsureAuxLayer(Transaction tr, Database db) => EnsureHiddenLayer(tr, db, AuxLayerName, 6,
+            "RC Automation: strefy pomocnicze (belka w narożniku) — RC_ZONES pokazuje / ukrywa");
+
+        /// <summary>Nowa warstwa wyłączona i niedrukowana (strefy pomocnicze; RC_ZONES). Istniejąca — bez zmian (stan ustawia użytkownik).</summary>
+        public static bool EnsureHiddenLayer(Transaction tr, Database db, string name, short color, string description)
+        {
+            var lt = (LayerTable)tr.GetObject(db.LayerTableId, OpenMode.ForRead);
+            if (lt.Has(name)) return false;
+            var rec = new LayerTableRecord { Name = name, Color = Color.FromColorIndex(ColorMethod.ByAci, color) };
+            lt.UpgradeOpen();
+            lt.Add(rec);
+            tr.AddNewlyCreatedDBObject(rec, true);
+            try { rec.IsOff = true; rec.IsPlottable = false; rec.Description = description; }
+            catch (System.Exception ex) { Log.Error("BeamStore.EnsureHiddenLayer", ex); }
+            return true;
+        }
 
         /// <summary>Strefa belki: zamknięta polilinia z rekordem RC_BEAM.</summary>
         public static bool IsZone(Entity e)
@@ -499,7 +525,25 @@ namespace BricsCadRc.Core
         /// UB 03 przerwane tylko tam, gdzie GB przechodzi przez krawędź — <c>GroundBeamSpansOnEdge</c>).
         /// </summary>
         public static List<ObjectId> MeshZonesOfSlab(Transaction tr, Database db, ObjectId slabId, List<Point2d> slabPoly)
-            => ZonesOfSlab(tr, db, slabId, slabPoly).Where(z => !(tr.GetObject(z, OpenMode.ForRead) is Entity e && IsGroundBeam(e))).ToList();
+            => ZonesOfSlab(tr, db, slabId, slabPoly).Where(z => !(tr.GetObject(z, OpenMode.ForRead) is Entity e && (IsGroundBeam(e) || IsCornerBeam(e)))).ToList();
+
+        /// <summary>
+ /// Znacznik strefy belki z pogrubienia w narożniku płyty (Prepare GA → CantileverEngine.ProcessCornerTabs). Wzór 
+        /// (APARTMENT-TEST): siatka B1 / B2 / T1 / T2 i UB 01 / 02 przechodzą przez taką strefę bez przerwy (jak przy GB w płycie) —
+        /// strefa daje tylko zbrojenie belki (RC_GENERATE → Beam).
+        /// </summary>
+        public const string CornerBeamApp = "RC_CORNER_BEAM";
+
+        public static bool IsCornerBeam(Entity e) => e != null && IsZone(e) && e.GetXDataForApplication(CornerBeamApp) != null;
+
+        public static void MarkCornerBeam(Transaction tr, Database db, Entity e)
+        {
+            if (e == null || e.GetXDataForApplication(CornerBeamApp) != null) return;
+            EnsureApp(tr, db, CornerBeamApp);
+            if (!e.IsWriteEnabled) e.UpgradeOpen();
+            e.XData = new ResultBuffer(new TypedValue((int)DxfCode.ExtendedDataRegAppName, CornerBeamApp),
+                                       new TypedValue((int)DxfCode.ExtendedDataInteger16, (short)1));
+        }
 
         internal static Point2d Centroid(Polyline pl)
         {

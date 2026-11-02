@@ -60,7 +60,18 @@ namespace BricsCadRc.Core
         // Etykieta (MLeader) dodawana osobno przez PlaceBarLabel.
         // ----------------------------------------------------------------
 
+        /// <summary>
+        /// Nowy pręt (polilinia albo pręt-blok wg BarFormat) z wymiarami zewnętrznymi (BarDimEngine, wymaganie:
+        /// „jak tworzysz pręty, to możesz je też jakoś wymiarować”).
+        /// </summary>
         public static ObjectId PlaceBar(Database db, BarData bar, Point3d insertPt)
+        {
+            var id = PlaceBarCore(db, bar, insertPt);
+            if (!id.IsNull) BarDimEngine.TryDimension(db, id);
+            return id;
+        }
+
+        private static ObjectId PlaceBarCore(Database db, BarData bar, Point3d insertPt)
         {
             EnsureAppIdRegistered(db);
             LayerManager.EnsureLayersExist(db);

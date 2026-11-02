@@ -39,6 +39,9 @@ namespace BricsCadRc.Core
             var bottom = ReadBeamView(db, bottomSlabId);
             if (bottom == null) { Msg("Obrys rzutu dolnego nie jest zamkniętą polilinią — przerwano."); return res; }
             var caps = PileCapEngine.CapsNear(db, bottom.Box, GaImportEngine.RegionMargin);
+ // oczepy oznaczone wcześniej w kolorze warstwy RC-PILECAP (magenta) — z powrotem zielony obrys GA
+            int recol = PileCapEngine.RecolorAll(db);
+            if (recol > 0) Msg($"Obrys pile cap w kolorze GA (zielony): {recol}.");
             if (caps.Count == 0)
             {
                 Msg($"Przy płycie nie ma pile cap (warstwa {PileCapEngine.LayerName}) — ponowne Prepare GA (opis „…SQx…DP / PILE CAP”).");

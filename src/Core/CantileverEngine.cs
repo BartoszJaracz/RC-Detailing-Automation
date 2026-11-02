@@ -126,12 +126,10 @@ namespace BricsCadRc.Core
                 }
                 return;
             }
-            var rec = new LayerTableRecord { Name = LayerName, Color = Color.FromColorIndex(ColorMethod.ByAci, LayerColor) };
-            lt.UpgradeOpen();
-            lt.Add(rec);
-            tr.AddNewlyCreatedDBObject(rec, true);
-            try { rec.Description = "RC Automation: wsporniki płyty (GB poza krawędzią) — wyłączone z obrysu siatki; rekord RC_CANT"; }
-            catch (System.Exception ex) { Log.Error("CantileverEngine.EnsureLayer.Description", ex); }
+ // (uwaga, APARTMENT-TEST screen 3): strefy wsporników to obramówki pomocnicze (obrys płyty z języczkiem
+            // zostaje rysunkiem) — nowa warstwa wyłączona i niedrukowana; RC_ZONES pokazuje / ukrywa
+            BeamStore.EnsureHiddenLayer(tr, db, LayerName, LayerColor,
+                "RC Automation: wsporniki płyty (GB poza krawędzią) — wyłączone z obrysu siatki; rekord RC_CANT; RC_ZONES pokazuje / ukrywa");
         }
 
         // ── opisy przy wsporniku ───────────────────────────────────────────
@@ -643,13 +641,28 @@ namespace BricsCadRc.Core
                         foreach (var zid in BeamStore.AllZones(tr, db))
                             if (tr.GetObject(zid, OpenMode.ForRead) is Polyline bz
                                 && GeometryHelper.IsPointInsidePolygon(GeometryHelper.GetPolylineVertices(bz), new Point2d(zc.Item1, zc.Item2)))
-                            { exists = true; break; }
+                            {
+                                exists = true;
+ // strefa z wcześniejszego Prepare GA (bez znacznika) — ta sama w narożniku: siatka bez przerwy 
+                                var ex0 = GeometryHelper.VerticesBbox(GeometryHelper.GetPolylineVertices(bz));
+                                if (Math.Abs(ex0.MinPoint.X - zp.Min(q => q.X)) < 5 && Math.Abs(ex0.MaxPoint.X - zp.Max(q => q.X)) < 5
+                                    && Math.Abs(ex0.MinPoint.Y - zp.Min(q => q.Y)) < 5 && Math.Abs(ex0.MaxPoint.Y - zp.Max(q => q.Y)) < 5)
+                                {
+                                    BeamStore.MarkCornerBeam(tr, db, bz);
+                                    BeamStore.EnsureAuxLayer(tr, db);
+                                    if (!bz.IsWriteEnabled) bz.UpgradeOpen();
+                                    bz.Layer = BeamStore.AuxLayerName;
+                                }
+                                break;
+                            }
                         if (gb >= 0) { taken.Add(gb); rep.UsedTexts.Add(gb); }
                         if (thk >= 0) { taken.Add(thk); rep.UsedTexts.Add(thk); }
                         if (!exists)
                         {
                             BeamStore.EnsureLayer(tr, db, GaImportEngine.ThickeningLayer);
-                            var zpl = new Polyline { Layer = BeamStore.LayerName };
+ // strefa pomocnicza (obrys płyty z języczkiem zostaje rysunkiem) — warstwa RC-BEAM-AUX, ukryta (RC_ZONES)
+                            BeamStore.EnsureAuxLayer(tr, db);
+                            var zpl = new Polyline { Layer = BeamStore.AuxLayerName };
                             for (int q = 0; q < 4; q++) zpl.AddVertexAt(q, new Point2d(zp[q].X, zp[q].Y), 0, 0, 0);
                             zpl.Closed = true;
                             var msw = (BlockTableRecord)tr.GetObject(SymbolUtilityServices.GetBlockModelSpaceId(db), OpenMode.ForWrite);
@@ -657,6 +670,7 @@ namespace BricsCadRc.Core
                             tr.AddNewlyCreatedDBObject(zpl, true);
                             CopyGaTag(pl, zpl);
                             BeamStore.Write(tr, db, zpl, new BeamParams { Height = Math.Round(hb), Width = u.Width }, pl.Handle.ToString());
+                            BeamStore.MarkCornerBeam(tr, db, zpl);   // siatka i UB 01 / 02 bez przerwy w strefie (wzór)
                             rep.Made++;
                             rep.Info.Add($"[RC CANT] {where}: pogrubienie w narożniku {u.Width:F0} × {u.Depth + root.Depth:F0} " +
                                          $"({(hb > 0 ? hb.ToString("F0") + "THK" : "bez opisu „xxxTHK”")}) — strefa belki RC-BEAM (RC_GENERATE → Beam).");

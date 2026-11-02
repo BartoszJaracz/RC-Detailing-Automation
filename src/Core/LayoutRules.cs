@@ -415,6 +415,35 @@ namespace BricsCadRc.Core
         /// w kierunku 1 („fixed to the bottom of the U-bars, and on top of the U-bars”), notatka „B-B” — przekrój w kierunku 2
         /// („fixed to the top of the U-bars, and to the underside”). W tekście litera danego przekroju.
         /// </summary>
+        /// <summary>
+        /// Notatka pod detalem powtarzalnym (wzór, APARTMENT-TEST: „DETAIL '2' 5No.” → „Quantity of members specified
+        /// on BBS are for all five items as shown on typical detail '2'”); zielona, wysokość jak notatki arkusza.
+        /// </summary>
+        public static string DetailCopiesNote(int members, int nr)
+            => "\\C3;Note:\\PQuantity of members specified on BBS are for all " + CountWord(members) + " items as shown on typical detail '" + nr + "'";
+
+        /// <summary>Szerokość notatki detalu powtarzalnego (arkusz wzorcowy: 64,54 mm) i rezerwa wysokości pod tytułem detalu.</summary>
+        public const double DetailNoteWidth = 64.54, DetailNoteBox = 30.0, DetailNoteGap = 1.0;
+
+        /// <summary>Fragment po którym rozpoznawana jest notatka detalu nr (także wpisana ręcznie).</summary>
+        public static string DetailCopiesKey(int nr) => "as shown on typical detail '" + nr + "'";
+
+        /// <summary>Liczba słownie (1–20, angielski jak na arkuszach); większa — cyfry.</summary>
+        public static string CountWord(int n)
+        {
+            var w = new[] { "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten", "eleven", "twelve",
+                            "thirteen", "fourteen", "fifteen", "sixteen", "seventeen", "eighteen", "nineteen", "twenty" };
+            return n >= 0 && n < w.Length ? w[n] : n.ToString(CultureInfo.InvariantCulture);
+        }
+
+        /// <summary>Liczba elementów z tytułu detalu („DETAIL '2'\\P5No.” → 5); brak — 1.</summary>
+        public static int MembersFromTitle(string title)
+        {
+            if (string.IsNullOrEmpty(title)) return 1;
+            var m = Regex.Match(title, @"(\d+)\s*No\.", RegexOptions.IgnoreCase);
+            return m.Success && int.TryParse(m.Groups[1].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int n) && n > 0 ? n : 1;
+        }
+
         public static string NibNote(string letter, int dir)
         {
             string l = (letter ?? "?") + "-" + (letter ?? "?");

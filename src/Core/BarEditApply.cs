@@ -97,6 +97,7 @@ namespace BricsCadRc.Core
                 RebuildBlock(db, editId, updated);
             else
                 SingleBarEngine.RebuildCompanions(db, editId, updated, ringStart, frame);
+            BarDimEngine.Refresh(db, editId);   // wymiary pręta — tylko gdy pręt je ma
 
             // Krok 3b — napraw grot strzałki etykiety pręta (geometria się zmieniła)
             using (var trFix = db.TransactionManager.StartTransaction())

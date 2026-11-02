@@ -27,6 +27,12 @@ namespace BricsCadRc.Core
         public const double SnapStep    = 50.0;
         public const double PileRefDist = 3000.0;
         public const int    MinCount    = 5;          // decyzja: ADD min. 5 prętów, nie mniej
+        /// <summary>
+ /// Wzór (APARTMENT-TEST, screen 1): ADD przy krawędzi płyty (skrajny pręt bliżej krawędzi niż NearEdge albo strefa
+        /// mapy poza krawędzią) — skrajny pręt ok. EdgeOffset od najbliższej krawędzi; bez wymiaru w tym kierunku (w poprzek).
+        /// </summary>
+        public const double NearEdge    = 400.0;
+        public const double EdgeOffset  = 140.0;
 
         public const double BaseAs = 393.0;                    // H10@200 (siatka podstawowa dołem)
         public static double AsAt200(int dia) => Math.PI * dia * dia / 4.0 * 1000.0 / Spacing;   // H10 393, H12 565, H16 1005
@@ -50,6 +56,9 @@ namespace BricsCadRc.Core
             public double Value;
             public List<int> Zones = new List<int>();
             public double RefA = double.NaN, RefC = double.NaN;   // pal odniesienia (wymiary); NaN = brak
+            /// <summary>Rozkład przy krawędzi płyty (dolnej / górnej w osi rozkładu) — skrajny pręt EdgeOffset od krawędzi, bez wymiaru w poprzek.</summary>
+            public bool EdgeLo, EdgeHi;
+            public bool AtEdge => EdgeLo || EdgeHi;
             public List<string> Warnings = new List<string>();
         }
 
@@ -129,6 +138,15 @@ namespace BricsCadRc.Core
                 a0 = refA + Math.Round((a0 - refA) / SnapStep) * SnapStep;
                 c0 = refC + Math.Round((c0 - refC) / SnapStep) * SnapStep;
 
+ // (APARTMENT-TEST: strefy mapy wystające za krawędź dawały pręty L=500 w języczku przy narożniku): najpierw rozkład
+                // w poprzek W PŁYCIE — krawędzie wspólne dla całej długości prętów (uskoki krawędzi), przy krawędzi skrajny pręt EdgeOffset od niej
+                var (eLo, eHi) = AcrossEdges(slab, horizontal, a0, a0 + len, midC);
+                if (!double.IsInfinity(eLo) && !double.IsInfinity(eHi) && eHi - eLo > 2 * EdgeOffset + span)
+                {
+                    if (c0 - eLo < NearEdge) { c0 = eLo + EdgeOffset; d.EdgeLo = true; }
+                    else if (eHi - (c0 + span) < NearEdge) { c0 = eHi - EdgeOffset - span; d.EdgeHi = true; }
+                }
+
                 // W obrysie płyty: zakres prętów wzdłuż (cięciwy przez wszystkie pręty) i rozkładu (w środku długości)
                 var (lo, hi) = AlongLimits(slab, horizontal, c0, c0 + span, a0 + len / 2);
                 if (hi - lo < len)
@@ -186,6 +204,24 @@ namespace BricsCadRc.Core
                 lo = Math.Max(lo, seg.lo); hi = Math.Min(hi, seg.hi);
             }
             return (lo + Cover, hi - Cover);
+        }
+
+        /// <summary>
+        /// Krawędzie płyty w osi rozkładu wspólne dla prętów a0..a1 (próbkowanie co ≤ 250 mm; cięciwa zawierająca <paramref name="cMid"/>,
+        /// brak — najdłuższa): największa dolna i najmniejsza górna. Brak przecięć — nieskończoności.
+        /// </summary>
+        private static (double lo, double hi) AcrossEdges(List<(double x, double y)> slab, bool h, double a0, double a1, double cMid)
+        {
+            double lo = double.NegativeInfinity, hi = double.PositiveInfinity;
+            int steps = Math.Max(2, (int)Math.Ceiling((a1 - a0) / 250.0));
+            for (int i = 0; i <= steps; i++)
+            {
+                double a = a0 + (a1 - a0) * i / steps;
+                var seg = Chord(slab, !h, a, cMid);
+                if (double.IsInfinity(seg.lo) || double.IsInfinity(seg.hi)) continue;
+                lo = Math.Max(lo, seg.lo); hi = Math.Min(hi, seg.hi);
+            }
+            return (lo, hi);
         }
 
         private static (double lo, double hi) AcrossLimits(List<(double x, double y)> slab, bool h, double aMid)

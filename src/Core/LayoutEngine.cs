@@ -88,6 +88,9 @@ namespace BricsCadRc.Core
             /// <summary>Przekrój: środki znaczników cięcia (MARK) — na rzucie albo na detalu.</summary>
             public List<(double X, double Y)> Marks = new List<(double, double)>();
             public int Order;
+ /// <summary>Detal: liczba elementów z tytułu („5No.”; 1 — pojedynczy) i zakres tytułu (notatka pod detalem powtarzalnym).</summary>
+            public int Members = 1;
+            public Box TitleBox = Box.Empty;
         }
 
         public sealed class SheetInfo
@@ -140,6 +143,12 @@ namespace BricsCadRc.Core
                     s.Item.W = Math.Max(s.VpW, LayoutRules.NibNoteMinWidth);
                     s.Item.H = s.VpH + LayoutRules.NibNoteBox;
                 }
+ // detal powtarzalny: pod tytułem notatka „Quantity of members … typical detail 'n'”
+                if (s.Item.Kind == LayoutRules.Kind.Detail && s.Members > 1 && !s.TitleBox.IsEmpty)
+                {
+                    s.Item.W = Math.Max(s.VpW, LayoutRules.DetailNoteWidth + 2);
+                    s.Item.H = s.VpH + LayoutRules.DetailNoteBox;
+                }
             }
             ctx.Items = ctx.Items.OrderBy(s => s.Order).ToList();
             ctx.Plan = LayoutRules.Arrange(ctx.Items.Select(s => s.Item).ToList());
@@ -181,6 +190,7 @@ namespace BricsCadRc.Core
             var planTitles = new List<(Ent e, string view)>();
             var phTitles = new List<(Ent e, int nr, bool used)>();
             var beamParts = new List<(Ent e, string zone, int nr, string role)>();
+            var beamTitleText = new Dictionary<Ent, string>();   // tytuły detali belek („DETAIL 'n'\\PmNo.”) — notatka detalu powtarzalnego
  // kopie rozkładów identycznych elementów nad detalem głównym (ANCHOR z [6] = strefa detalu głównego) — bez rzutni 
             var copyZones = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var holeFrames = new List<(Ent e, int nr)>();
@@ -216,6 +226,7 @@ namespace BricsCadRc.Core
                         if (bd != null && !string.IsNullOrEmpty(bd.Value.zone) && bd.Value.role != BeamStore.RolePlanRef)
                         {
                             beamParts.Add((en, XLink.Norm(bd.Value.zone), bd.Value.nr, bd.Value.role));
+                            if (bd.Value.role == BeamStore.RoleTitle && e is MText bmt) beamTitleText[en] = bmt.Text ?? "";
                             if (bd.Value.role == BeamStore.RoleAnchor && !string.IsNullOrEmpty(BeamStore.ReadDetailGroup(e).master))
                                 copyZones.Add(XLink.Norm(bd.Value.zone));
                             continue;
@@ -326,6 +337,7 @@ namespace BricsCadRc.Core
             // 3. detale belek i otworów
             {
                 var dets = new List<(string key, int nr, Box core, Box box)>();
+                var detTitle = new Dictionary<string, (int members, Box title)>();   // klucz detalu → liczba elementów z tytułu, zakres tytułu
                 // uwaga (PLOT 144-146): kopie rozkładów identycznych elementów (ramka z przekątnymi) — NIE na arkuszach;
                 // ich obiekty (i rozkłady w pobliżu) zajęte przez „kopie”, żeby nie trafiły do detalu głównego; ramka COPYBOX — też pominięta
                 var copies = new List<Box>();
@@ -341,7 +353,17 @@ namespace BricsCadRc.Core
                     }
                     if (core.IsEmpty) continue;
                     if (copy) copies.Add(core);
-                    else dets.Add(("DETAIL '" + g.Key.nr + "'", g.Key.nr, core, core));
+                    else
+                    {
+                        dets.Add(("DETAIL '" + g.Key.nr + "'", g.Key.nr, core, core));
+                        var tp = g.FirstOrDefault(p => p.role == BeamStore.RoleTitle && beamTitleText.ContainsKey(p.e));
+                        if (tp.e != null)
+                        {
+                            int mem = LayoutRules.MembersFromTitle(beamTitleText[tp.e]);
+                            string dk = "DETAIL '" + g.Key.nr + "'";
+                            if (!detTitle.ContainsKey(dk) || mem > detTitle[dk].members) detTitle[dk] = (mem, tp.e.Box);
+                        }
+                    }
                 }
                 foreach (var en in ents)
                     if (!en.Claimed && copies.Any(c => en.Box.Inside(c.Grow(1.0)))) en.Claimed = true;
@@ -370,11 +392,15 @@ namespace BricsCadRc.Core
                     en.Claimed = true;
                 }
                 foreach (var d in dets.OrderBy(d => d.nr))
-                    ctx.Items.Add(new Src
+                {
+                    var src = new Src
                     {
                         Item = new LayoutRules.Item { Key = d.key, Kind = LayoutRules.Kind.Detail },
                         Ext = d.box, Scale = 25, Order = 500 + d.nr
-                    });
+                    };
+                    if (detTitle.TryGetValue(d.key, out var dt)) { src.Members = dt.members; src.TitleBox = dt.title; }
+                    ctx.Items.Add(src);
+                }
                 // decyzja: przekrój z linią cięcia na detalu — na arkuszu tego detalu
                 foreach (var sec in ctx.Items.Where(i => i.Item.Kind == LayoutRules.Kind.Section))
                 {
@@ -622,6 +648,40 @@ namespace BricsCadRc.Core
 
         // ── teksty arkusza (wspólne dla RC_LAYOUT i RC_LAYOUT_TEXTS) ──────
 
+        /// <summary>Numer detalu z klucza („DETAIL '2'” → 2).</summary>
+        private static int DetailNr(string key)
+        {
+            var m = DetailRx.Match(key ?? "");
+            return m.Success && int.TryParse(m.Groups[1].Value, NumberStyles.Integer, CultureInfo.InvariantCulture, out int n) ? n : 0;
+        }
+
+        /// <summary>
+        /// Punkt wstawienia (lewy górny) notatki detalu powtarzalnego na papierze: pod tytułem detalu, wyśrodkowana na tytule
+        /// (arkusz wzorcowy APARTMENT-TEST). Rzutnia: środek (vx, vy), środek widoku (cx, cy), skala 1:n.
+        /// </summary>
+        private static (double X, double Y) DetailNotePos(double vx, double vy, double cx, double cy, int n, Box title)
+        {
+            double tx = vx + (title.Cx - cx) / n, ty = vy + (title.Y0 - cy) / n;
+            return (tx - LayoutRules.DetailNoteWidth / 2, ty - LayoutRules.DetailNoteGap);
+        }
+
+        private static void AddDetailNote(Transaction tr, Database db, BlockTableRecord btr, string layer, ObjectId style,
+                                          int members, int nr, double x, double yTop, string key)
+        {
+            var note = new MText();
+            note.SetDatabaseDefaults(db);
+            note.Contents = LayoutRules.DetailCopiesNote(members, nr);
+            note.Layer = layer;
+            note.TextStyleId = style;
+            note.TextHeight = LayoutRules.NibNoteHeight;
+            note.Width = LayoutRules.DetailNoteWidth;
+            note.Attachment = AttachmentPoint.TopLeft;
+            note.Location = new Point3d(x, yTop, 0);
+            btr.AppendEntity(note);
+            tr.AddNewlyCreatedDBObject(note, true);
+            Tag(tr, db, note, RoleNote, key);
+        }
+
         private static void AddNibNote(Transaction tr, Database db, BlockTableRecord btr, string layer, ObjectId style,
                                        string letter, int dir, double x, double yTop, string key)
         {
@@ -838,6 +898,12 @@ namespace BricsCadRc.Core
                             AddNibNote(tr, db, btr, noteLayer, noteStyle, s.Letter, s.NibDir, x0, y1 - s.VpH - LayoutRules.NibNoteGap, pl.Item.Key);
                             res.Notes++;
                         }
+                        if (s.Item.Kind == LayoutRules.Kind.Detail && s.Members > 1 && !s.TitleBox.IsEmpty)
+                        {
+                            var (nx, ny) = DetailNotePos(vp.CenterPoint.X, vp.CenterPoint.Y, s.Ext.Cx, s.Ext.Cy, s.Scale, s.TitleBox);
+                            AddDetailNote(tr, db, btr, noteLayer, noteStyle, s.Members, DetailNr(pl.Item.Key), nx, ny, pl.Item.Key);
+                            res.Notes++;
+                        }
                     }
 
                     // odsyłacze do pozostałych arkuszy — każdy w osobnej ramce
@@ -873,6 +939,8 @@ namespace BricsCadRc.Core
             /// <summary>Lewa krawędź widocznej części rzutu (kolejność części „1/2”, „2/2”).</summary>
             internal Dictionary<LayoutRules.Kind, double> PlanX = new Dictionary<LayoutRules.Kind, double>();
             internal List<(string Letter, int Dir, double X, double YTop, string Key)> Notes = new List<(string, int, double, double, string)>();
+ /// <summary>Notatki detali powtarzalnych: liczba elementów, numer detalu, lewy górny punkt, klucz.</summary>
+            internal List<(int Members, int Nr, double X, double YTop, string Key)> DetailNotes = new List<(int, int, double, double, string)>();
         }
 
         public sealed class TextsCtx
@@ -959,9 +1027,20 @@ namespace BricsCadRc.Core
                                 double py = vp.CenterPoint.Y - vp.Height / 2 - LayoutRules.NibNoteGap;
                                 sh.Notes.Add((it.Letter, it.NibDir, px, py, it.Item.Key));
                             }
+ // detal powtarzalny — notatka pod tytułem, gdy na arkuszu nie ma takiej (także wpisanej ręcznie)
+                            int dnr = DetailNr(it.Item.Key);
+                            if (it.Item.Kind == LayoutRules.Kind.Detail && it.Members > 1 && !it.TitleBox.IsEmpty && dnr > 0
+                                && win.HasPoint(it.TitleBox.Cx, it.TitleBox.Cy)
+                                && allText.IndexOf(LayoutRules.DetailCopiesKey(dnr), StringComparison.OrdinalIgnoreCase) < 0
+                                && !sh.DetailNotes.Any(x => x.Nr == dnr))
+                            {
+                                var (nx, ny) = DetailNotePos(vp.CenterPoint.X, vp.CenterPoint.Y, cx, cy, n, it.TitleBox);
+                                sh.DetailNotes.Add((it.Members, dnr, nx, ny, it.Item.Key));
+                            }
                         }
-                        // skala każdej rzutni arkusza (wzór: także 1:250 — plan sytuacyjny, który nie jest rzutem / detalem programu)
-                        scales.Add(n);
+                        // skala każdej rzutni arkusza (wzór: także 1:250 — plan sytuacyjny, który nie jest rzutem / detalem programu);
+ // (uwaga: „layout texts dopisuje skalę 1:1 kompletnie niepotrzebnie”) — rzutnie 1:1 (notatki, legendy) bez skali
+                        if (n > 1) scales.Add(n);
                     }
                     if (sh.Contents.Count == 0) t.Warnings.Add($"{name}: w rzutniach nie rozpoznano rzutów / przekrojów / detali — TITLE_3 bez zmian");
                     sh.Kinds = kinds;
@@ -1015,6 +1094,7 @@ namespace BricsCadRc.Core
                         e.UpgradeOpen(); e.Erase(); res.Removed++;
                     }
                     foreach (var n in sh.Notes) { AddNibNote(tr, db, btr, noteLayer, noteStyle, n.Letter, n.Dir, n.X, n.YTop, n.Key); res.Notes++; }
+                    foreach (var n in sh.DetailNotes) { AddDetailNote(tr, db, btr, noteLayer, noteStyle, n.Members, n.Nr, n.X, n.YTop, n.Key); res.Notes++; }
                     if (t.Sheets.Count > 1)
                     {
                         // wzór: rzut na kilku arkuszach — na innych arkuszach jeden odsyłacz z zakresem numerów

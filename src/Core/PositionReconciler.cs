@@ -169,12 +169,27 @@ namespace BricsCadRc.Core
  // przez użytkownika) — długość bez zmian
                     // Any — LengthA to wymiar A kształtu (nie długość w rzucie): A i kształt z pręta, przebudowa z wymiarów pręta
                     bool anyDist = BarBlockEngine.IsAny(barDist);
-                    double len = anyDist ? bar.LengthA
-                               : barDist.ViewingDirection == "Manual" && barDist.LengthA > 0 ? barDist.LengthA
-                               : PlanLengthOf(bar);
+ // (zgłoszenie: po RC_EDIT_BAR kierunek widoku Manual wracał do Auto): Manual — długość wskazanego
+                    // boku (ViewSegmentIndex) przeliczona z obrysu pręta PO edycji (zmiana wymiarów zmienia ten bok, nie inny);
+                    // brak odcinka → długość dotychczasowa. Kierunek widoku i indeks boku zostają nietknięte.
+                    bool manual = !anyDist && string.Equals(barDist.ViewingDirection, "Manual", StringComparison.OrdinalIgnoreCase);
+                    string vdBefore = barDist.ViewingDirection; int segBefore = barDist.ViewSegmentIndex; double lenBefore = barDist.LengthA;
+                    double len;
+                    if (anyDist) len = bar.LengthA;
+                    else if (manual)
+                    {
+                        double seg = -1;
+                        try { seg = BricsCadRc.Commands.BarCommands.ManualLengthForSegment(tr, barId, bar, barDist.ViewSegmentIndex); }
+                        catch (System.Exception ex) { Log.Error("PositionReconciler.ManualLength", ex); }
+                        len = seg > 0 ? seg : barDist.LengthA > 0 ? barDist.LengthA : PlanLengthOf(bar);
+                    }
+                    else len = PlanLengthOf(bar);
                     if (anyDist) barDist.ShapeCode = bar.ShapeCode;
                     barDist.LengthA  = len;
+                    if (manual) { barDist.ViewingDirection = "Manual"; barDist.ViewSegmentIndex = segBefore; }
                     BarBlockEngine.WriteXData(brDist, barDist);
+                    Log.Info($"PositionReconciler.Propagate: rozkład {brDist.Handle} {barDist.Mark} widok {vdBefore ?? "-"} (bok {segBefore}) " +
+                             $"→ {barDist.ViewingDirection} (bok {barDist.ViewSegmentIndex}), długość {lenBefore:F0} → {len:F0}.");
                     toRebuild.Add((oid, barDist, len));
                 }
                 tr.Commit();

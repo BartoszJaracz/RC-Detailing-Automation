@@ -618,9 +618,10 @@ namespace BricsCadRc.Core
                     double side = barC >= pc ? -1 : 1;                       // linia po stronie pala, z dala od pręta
                     dims.Add((P(pa, pc), P(end, barC), P((pa + end) / 2, pc + side * DimOff), rotAlong));
                 }
-                // w poprzek: środek pala → koniec LINII ROZKŁADU (skrajny pręt) na linii opisu
+                // w poprzek: środek pala → koniec LINII ROZKŁADU (skrajny pręt) na linii opisu; ADD przy krawędzi (EdgeOffset od niej,
+                // wzór) — bez wymiaru w poprzek
                 double edge = Math.Abs(d.C0 - pc) <= Math.Abs(d.C1 - pc) ? d.C0 : d.C1;
-                if (Math.Abs(edge - pc) >= 50)
+                if (!d.AtEdge && Math.Abs(edge - pc) >= 50)
                 {
                     double la = Math.Abs(lineA - pa) > 2 * DimOff ? (pa + lineA) / 2 : pa + (pa <= lineA ? -DimOff : DimOff);
                     dims.Add((P(pa, pc), P(lineA, edge), P(la, (pc + edge) / 2), rotAcross));
@@ -634,10 +635,13 @@ namespace BricsCadRc.Core
                 bool toLo = d.A0 - ch.lo <= ch.hi - d.A1;
                 double eA = toLo ? ch.lo : ch.hi, bA = toLo ? d.A0 : d.A1;
                 dims.Add((P(eA, barC), P(bA, barC), P((eA + bA) / 2, barC - DimOff), rotAlong));
-                var cc = AddReinfPlanner.Chord(slabPoly, !horizontal, lineA, midC);
-                bool toLoC = d.C0 - cc.lo <= cc.hi - d.C1;
-                double eC = toLoC ? cc.lo : cc.hi, bC = toLoC ? d.C0 : d.C1;
-                dims.Add((P(lineA, eC), P(lineA, bC), P(lineA - DimOff, (eC + bC) / 2), rotAcross));
+                if (!d.AtEdge)   // ADD przy krawędzi — bez wymiaru w poprzek 
+                {
+                    var cc = AddReinfPlanner.Chord(slabPoly, !horizontal, lineA, midC);
+                    bool toLoC = d.C0 - cc.lo <= cc.hi - d.C1;
+                    double eC = toLoC ? cc.lo : cc.hi, bC = toLoC ? d.C0 : d.C1;
+                    dims.Add((P(lineA, eC), P(lineA, bC), P(lineA - DimOff, (eC + bC) / 2), rotAcross));
+                }
             }
 
             RcTemplateEngine.EnsureStyles(db);   // styl wymiarów ADD (DEMOCLIENT-1-50 RC) — w wersji bazowej brak → wymiary niewidoczne 

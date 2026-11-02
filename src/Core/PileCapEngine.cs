@@ -144,7 +144,8 @@ namespace BricsCadRc.Core
                 int noText = 0;
                 foreach (var id in cands)
                 {
-                    if (!(tr.GetObject(id, OpenMode.ForRead) is Polyline pl) || !GeometryHelper.IsEffectivelyClosed(pl) || IsCap(pl)) continue;
+                    if (!(tr.GetObject(id, OpenMode.ForRead) is Polyline pl) || !GeometryHelper.IsEffectivelyClosed(pl)) continue;
+                    if (IsCap(pl)) { GaColor(pl); continue; }
                     var r = AxisRect(GeometryHelper.GetRawPolylineVertices(pl));
                     if (r == null) continue;
                     var c = new Point2d((r.Value.X0 + r.Value.X1) / 2, (r.Value.Y0 + r.Value.Y1) / 2);
@@ -160,8 +161,16 @@ namespace BricsCadRc.Core
                     var d = new Data { B = b, L = l, H = h, Toc = CantileverRules.ParseToc(t) ?? 0 };
                     EnsureLayer(tr, db);
                     pl.UpgradeOpen();
+ // (uwaga: „pile cap rysuje się fioletową polilinią, brakuje naszego obrysu z GA na zielono”): obrys
+                    // oczepu zostaje w kolorze obrysu GA (warstwa źródłowa SD-PILED-RAFT — zielony), warstwa RC-PILECAP tylko rozpoznaje oczep
+                    var src = pl.Color;
+                    if (src.IsByLayer || src.IsByBlock)
+                    {
+                        var lr = tr.GetObject(pl.LayerId, OpenMode.ForRead) as LayerTableRecord;
+                        src = lr != null && lr.Name != LayerName ? lr.Color : Color.FromColorIndex(ColorMethod.ByAci, GaColorIndex);
+                    }
                     pl.Layer = LayerName;
-                    pl.Color = Color.FromColorIndex(ColorMethod.ByLayer, 256);
+                    pl.Color = src;
                     Write(tr, db, pl, d);
                     res.Add(id);
                 }
@@ -170,6 +179,36 @@ namespace BricsCadRc.Core
                 if (noText > 0) messages?.Add($"[RC PILECAP] {where}: {noText} zamkniętych prostokątów poza płytą bez opisu „PILE CAP” — pominięte.");
             }
             return res;
+        }
+
+        /// <summary>Kolor obrysu oczepu, gdy warstwa źródłowa nieznana (obrys GA SD-PILED-RAFT — zielony).</summary>
+        public const short GaColorIndex = 3;
+
+        /// <summary>
+        /// Oczep oznaczony wcześniej z kolorem „ByLayer” (magenta warstwy RC-PILECAP) — kolor obrysu GA (zielony). Obiekt otwarty w transakcji.
+        /// </summary>
+        public static bool GaColor(Polyline pl)
+        {
+            if (pl == null || !(pl.Color.IsByLayer || pl.Color.IsByBlock)) return false;
+            if (!pl.IsWriteEnabled) pl.UpgradeOpen();
+            pl.Color = Color.FromColorIndex(ColorMethod.ByAci, GaColorIndex);
+            return true;
+        }
+
+ /// <summary>Wszystkie oczepy rysunku z kolorem „ByLayer” → zielony obrys GA (RC_GENERATE → PileCap, rysunki sprzed).</summary>
+        public static int RecolorAll(Database db)
+        {
+            int n = 0;
+            try
+            {
+                using var tr = db.TransactionManager.StartTransaction();
+                var ms = (BlockTableRecord)tr.GetObject(SymbolUtilityServices.GetBlockModelSpaceId(db), OpenMode.ForRead);
+                foreach (ObjectId id in ms)
+                    if (!id.IsErased && tr.GetObject(id, OpenMode.ForRead) is Polyline pl && IsCap(pl) && GaColor(pl)) n++;
+                tr.Commit();
+            }
+            catch (System.Exception ex) { Log.Error("PileCapEngine.RecolorAll", ex); }
+            return n;
         }
 
         /// <summary>Oczepy (RC_PILECAP) przy obrysie płyty: środek w obwiedni obrysu powiększonej o <paramref name="margin"/>.</summary>

@@ -99,6 +99,19 @@ namespace BricsCadRc.Core
         }
 
         /// <summary>Strefa wspornika nachodzi na obrys albo leży nasadą na jego krawędzi (wierzchołek w środku / na obrysie i poza nim).</summary>
+        /// <summary>ANCHOR detalu niewidoczny (Visible = false) — obiekt i rekord bez zmian.</summary>
+        private static void HideDetailAnchor(Database db, ObjectId anchorId)
+        {
+            if (anchorId.IsNull || anchorId.IsErased) return;
+            try
+            {
+                using var tr = db.TransactionManager.StartTransaction();
+                if (tr.GetObject(anchorId, OpenMode.ForWrite) is Entity e) e.Visible = false;
+                tr.Commit();
+            }
+            catch (System.Exception ex) { Log.Error("AutoRebar.HideDetailAnchor", ex); }
+        }
+
         private static bool TouchesOutline(List<Point2d> zone, List<Point2d> outline)
         {
             bool inOrOn = false, outside = false;
@@ -179,6 +192,9 @@ namespace BricsCadRc.Core
             var tg = PrepareBeamDetail(doc, dv, null, handle, zone, m => msg(m.Replace("belka", "wspornik")), offsetFrame: true,
                                        extraLines: stepLines, signature: sig);
             if (tg == null) return;
+            // wzór (APARTMENT-TEST, detal '2'): wypustka bez pogrubienia — w detalu bez obramówki strefy (ANCHOR),
+            // beton rysuje obrys płyty z języczkiem; ANCHOR zostaje (grupa detalu, kopie), tylko niewidoczny
+            if (data.Protrusion) HideDetailAnchor(db, tg.Anchor);
             CopyCantileverLabels(db, tg, zone, m => msg($"{name}: {m}"));
             SetBeamDetailOverrides(tg);
 

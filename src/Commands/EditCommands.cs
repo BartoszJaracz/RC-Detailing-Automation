@@ -366,13 +366,29 @@ namespace BricsCadRc.Commands
                 }
                 barSrc ??= new BarData();
 
+ // rozkład już Manual i w dialogu nadal Manual — Esc przy wskazaniu boku zostawia DOTYCHCZASOWY bok
+                // (długość przeliczona z obecnego obrysu pręta), a nie przełącza na Auto
+                bool wasManual = string.Equals(bar.ViewingDirection, "Manual", StringComparison.OrdinalIgnoreCase) && bar.ViewSegmentIndex >= 0;
                 if (newViewDir == "Manual" && !polyId.IsNull)
                 {
+                    if (wasManual) ed.WriteMessage("\n[RC] Kierunek widoku Manual — wskaż nowy bok albo Esc = bez zmian.");
                     double segLen = BarCommands.GetViewLengthManual(ed, db, polyId, barSrc);
                     if (segLen > 0)
                     {
                         newLengthA = segLen;
                         newSegIdx  = barSrc.ViewSegmentIndex;
+                    }
+                    else if (wasManual)
+                    {
+                        double keep = -1;
+                        using (var trK = db.TransactionManager.StartOpenCloseTransaction())
+                        {
+                            try { keep = BarCommands.ManualLengthForSegment(trK, polyId, barSrc, bar.ViewSegmentIndex); }
+                            catch (System.Exception ex) { Log.Error("EditCommands.EditDistribution.KeepManual", ex); }
+                            trK.Commit();
+                        }
+                        newLengthA = keep > 0 ? keep : (double?)null;
+                        newSegIdx  = bar.ViewSegmentIndex;
                     }
                     else
                     {

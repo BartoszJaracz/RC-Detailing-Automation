@@ -183,8 +183,10 @@ namespace BricsCadRc.Commands
             if (!ConfirmIdenticalBars(ed, db, selResult.ObjectId, sourceBar)) return;
 
             // --- Krok 2: Dialog "Reinforcement detailing" ---
-            var detailDlg = new ReinfDetailingDialog();
+ // dialog pamięta ostatni kierunek widoku w sesji (Manual nie „resetuje się” do Auto przy kolejnym rozkładzie)
+            var detailDlg = new ReinfDetailingDialog(_lastViewingDirection);
             if (Application.ShowModalWindow(detailDlg) != true) return;
+            if (!detailDlg.IsAnyMethod) _lastViewingDirection = detailDlg.IsManualViewingDirection ? "Manual" : "Auto";
 
             // Method = Any (decyzja, jak w ASD): jeden pręt w miejscu wskazanym, liczba i rozstaw w opisie
             if (detailDlg.IsAnyMethod)
@@ -1419,6 +1421,22 @@ namespace BricsCadRc.Commands
                 bar.ViewSegmentIndex = segIdx;
                 return segLen;
             }
+        }
+
+        /// <summary>
+        /// Długość rozkładu Manual dla zapamiętanego boku (ViewSegmentIndex) z BIEŻĄCEGO obrysu pręta — po RC_EDIT_BAR / zmianie
+ /// geometrii (rozkład Manual nie może wracać do Auto ani trzymać starej długości boku). ≤ 0 — brak obrysu
+        /// albo indeks poza obrysem (wołający zostawia dotychczasową długość).
+        /// </summary>
+        /// <summary>Ostatni kierunek widoku wybrany w RC_BAR (sesja) — domyślny w następnym dialogu „Reinforcement detailing”.</summary>
+        private static string _lastViewingDirection = "Auto";
+
+        internal static double ManualLengthForSegment(Transaction tr, ObjectId barId, BarData bar, int segIdx)
+        {
+            if (tr == null || barId.IsNull || barId.IsErased || segIdx < 0) return -1;
+            var verts = GetBarOutlineVertices(tr, barId);
+            if (verts == null || segIdx + 1 >= verts.Count) return -1;
+            return ManualSegmentLength(verts, segIdx, bar);
         }
 
         /// <summary>

@@ -1,15 +1,15 @@
 @echo off
-echo [RC Automation] Budowanie pluginu...
+echo [RC Automation] Building the plugin...
 cd /d "%~dp0src"
 dotnet build BricsCadRc.csproj -c Release
 if errorlevel 1 (
-    echo [BLAD] Kompilacja nieudana.
+    echo [ERROR] Build failed.
     pause
     exit /b 1
 )
 echo.
-echo [OK] RcAutomation.dll gotowy w folderze bin\
+echo [OK] RcAutomation.dll ready in the bin\ folder
 echo.
-echo Aby zaladowac w BricsCAD wpisz: NETLOAD
-echo Wybierz plik: %~dp0bin\RcAutomation.dll
+echo To load it in BricsCAD type: NETLOAD
+echo Select file: %~dp0bin\RcAutomation.dll
 pause

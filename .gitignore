@@ -3,16 +3,54 @@ obj/
 *.user
 .vs/
 
-# Testowe/lokalne buildy
+# Local / test builds
 bin_*/
 bin-staging/
 *.pdb
 
-# Ustawienia lokalne Claude Code (per użytkownik)
+# Local Claude Code settings (per user)
 .claude/settings.local.json
 
-# Artefakty testów / recenzji
+# Test / review artifacts
 bin-staging-review/
 /DELAY.png
 /REGEN.dwg
 tools/BrxSmokeTests/REGEN.dwg
+
+# CAD drawings and CAD temporary files (never commit real project drawings)
+*.dwg
+*.dxf
+*.bak
+*.dwl
+*.dwl2
+*.sv$
+*.ac$
+plot.log
+*.err
+
+# AI session outputs
+Claude outputs/
+
+# Documents and reports (internal; add explicitly if a public document is needed)
+*.pdf
+*.docx
+
+# Logs and test results
+*.log
+TestResults/
+*.trx
+
+# IDE
+.idea/
+*.suo
+*.DotSettings.user
+
+# Packages / archives
+*.nupkg
+*.bundle
+*.zip
+
+# Optional company resources (embedded only when present locally; never commit)
+src/Resources/default-bbs.xls
+src/Resources/rc-template.dxf.gz
+src/Resources/demo-mono.ctb

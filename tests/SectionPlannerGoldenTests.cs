@@ -7,7 +7,7 @@ namespace BricsCadRc.Tests
 {
     /// <summary>
     /// Złoty test SectionPlanner (plan bezpiecznika przekrojów, etap 1 krok 1): pełny zrzut Result (wszystkie pola sprzed
-    /// bezpiecznika, liczby w formacie „R” — bit w bit) dla 5 wejść, skrót SHA-256 zapisany na NIEZMIENIONYM kodzie planera.
+    /// bezpiecznika, liczby znormalizowane do siatki 1e-6 mm — <see cref="N"/>, niezależne od platformy) dla 5 wejść, skrót SHA-256 zapisany na NIEZMIENIONYM kodzie planera.
     /// Pola dopisane później (UsedDists, UsedPiles, LevelDiameters, Source*) NIE wchodzą do zrzutu — nie mogą zmienić wyniku.
     /// Zmiana geometrii przekroju = zmiana wyniku względem wzorca baseline (wymaga zgody użytkownika) — wtedy też podbić
     /// <see cref="SectionPlanner.Version"/>.
@@ -21,26 +21,45 @@ namespace BricsCadRc.Tests
 
         private static string R(double v) => v.ToString("R", Inv);
 
-        public static string Dump(SectionPlanner.Result r)
+        /// <summary>
+        /// Liczba do skrótu złotego: siatka 1e-6 mm (= podstawowa tolerancja SectionPlanner), format „F6” w InvariantCulture,
+        /// bez zer końcowych, „-0” → „0”. Usuwa różnice platformowe rzędu 1 ulp (Math.Sin / Math.Atan2: Windows UCRT vs Linux
+        /// glibc), a każda zmiana wartości ≥ 1e-6 mm zmienia zapis.
+        /// </summary>
+        internal static string N(double v)
+        {
+            if (double.IsNaN(v) || double.IsInfinity(v)) return R(v);
+            string s = v.ToString("F6", Inv);
+            if (s.IndexOf('.') >= 0) s = s.TrimEnd('0').TrimEnd('.');
+            return s == "-0" ? "0" : s;
+        }
+
+        /// <summary>Pełny zrzut bit w bit (format „R”) — do porównań w obrębie jednego uruchomienia.</summary>
+        public static string Dump(SectionPlanner.Result r) => Dump(r, R);
+
+        /// <summary>Zrzut znormalizowany (<see cref="N"/>) — podstawa skrótów złotych, niezależny od platformy.</summary>
+        public static string DumpNormalized(SectionPlanner.Result r) => Dump(r, N);
+
+        private static string Dump(SectionPlanner.Result r, Func<double, string> num)
         {
             var sb = new StringBuilder();
             void P(IEnumerable<(double U, double V)>? pts, string name)
             {
                 sb.Append(name).Append('=');
                 if (pts == null) { sb.Append("null"); return; }
-                foreach (var p in pts) sb.Append(R(p.U)).Append(',').Append(R(p.V)).Append(';');
+                foreach (var p in pts) sb.Append(num(p.U)).Append(',').Append(num(p.V)).Append(';');
             }
-            sb.Append("UMin=").Append(R(r.UMin)).Append(" UMax=").Append(R(r.UMax)).Append(" NibTop=").Append(R(r.NibTop)).Append('\n');
+            sb.Append("UMin=").Append(num(r.UMin)).Append(" UMax=").Append(num(r.UMax)).Append(" NibTop=").Append(num(r.NibTop)).Append('\n');
             foreach (var s in r.Segments)
             {
-                sb.Append("SEG ").Append(R(s.U0)).Append(' ').Append(R(s.U1)).Append(' ').Append(s.End0).Append(' ').Append(s.End1)
-                  .Append(' ').Append(R(s.Nib0)).Append(' ').Append(R(s.Nib1)).Append(' ');
+                sb.Append("SEG ").Append(num(s.U0)).Append(' ').Append(num(s.U1)).Append(' ').Append(s.End0).Append(' ').Append(s.End1)
+                  .Append(' ').Append(num(s.Nib0)).Append(' ').Append(num(s.Nib1)).Append(' ');
                 P(s.Polygon, "poly");
                 sb.Append('\n');
             }
             foreach (var d in r.Dots)
-                sb.Append("DOT ").Append(R(d.U)).Append(' ').Append(R(d.V)).Append(' ').Append(d.Diameter).Append(' ').Append(d.PosNr)
-                  .Append(' ').Append(d.Top).Append(' ').Append(d.Mesh).Append(' ').Append(d.TinNib).Append(' ').Append(R(d.NomSpacing)).Append('\n');
+                sb.Append("DOT ").Append(num(d.U)).Append(' ').Append(num(d.V)).Append(' ').Append(d.Diameter).Append(' ').Append(d.PosNr)
+                  .Append(' ').Append(d.Top).Append(' ').Append(d.Mesh).Append(' ').Append(d.TinNib).Append(' ').Append(num(d.NomSpacing)).Append('\n');
             foreach (var b in r.Bars)
             {
                 sb.Append("BAR ").Append(b.Diameter).Append(' ').Append(b.PosNr).Append(' ').Append(b.Top).Append(' ').Append(b.Kind).Append(' ');
@@ -49,14 +68,14 @@ namespace BricsCadRc.Tests
                 sb.Append('\n');
             }
             foreach (var p in r.Piles)
-                sb.Append("PILE ").Append(R(p.U)).Append(' ').Append(R(p.Width)).Append(' ').Append(R(p.Top)).Append(' ').Append(R(p.Bottom)).Append('\n');
+                sb.Append("PILE ").Append(num(p.U)).Append(' ').Append(num(p.Width)).Append(' ').Append(num(p.Top)).Append(' ').Append(num(p.Bottom)).Append('\n');
             foreach (var m in r.Dims)
-                sb.Append("DIM ").Append(R(m.U1)).Append(' ').Append(R(m.V1)).Append(' ').Append(R(m.U2)).Append(' ').Append(R(m.V2))
-                  .Append(' ').Append(R(m.LineU)).Append(' ').Append(R(m.LineV)).Append(' ').Append(m.Vertical).Append('\n');
+                sb.Append("DIM ").Append(num(m.U1)).Append(' ').Append(num(m.V1)).Append(' ').Append(num(m.U2)).Append(' ').Append(num(m.V2))
+                  .Append(' ').Append(num(m.LineU)).Append(' ').Append(num(m.LineV)).Append(' ').Append(m.Vertical).Append('\n');
             foreach (var l in r.Labels)
-                sb.Append("LBL ").Append(l.Text).Append(' ').Append(R(l.U)).Append(' ').Append(R(l.V)).Append(' ').Append(R(l.Height))
-                  .Append(' ').Append(l.HasLeader).Append(' ').Append(R(l.LeaderU)).Append(' ').Append(R(l.LeaderV)).Append('\n');
-            sb.Append("SSL ").Append(r.SslMark.HasValue ? R(r.SslMark.Value.U) + "," + R(r.SslMark.Value.V) : "null")
+                sb.Append("LBL ").Append(l.Text).Append(' ').Append(num(l.U)).Append(' ').Append(num(l.V)).Append(' ').Append(num(l.Height))
+                  .Append(' ').Append(l.HasLeader).Append(' ').Append(num(l.LeaderU)).Append(' ').Append(num(l.LeaderV)).Append('\n');
+            sb.Append("SSL ").Append(r.SslMark.HasValue ? num(r.SslMark.Value.U) + "," + num(r.SslMark.Value.V) : "null")
               .Append(' ').Append(r.SslText ?? "null").Append('\n');
             foreach (var w in r.Warnings) sb.Append("WARN ").Append(w).Append('\n');
             return sb.ToString();
@@ -256,40 +275,149 @@ namespace BricsCadRc.Tests
         {
  // v6 (decyzja użytkownika): nib / nib-S1 — T IN NIB leży na górnym ramieniu UB 03 (−126 → −104); piles / beam / beam-S1 /
             // along-S1 — pal: głowica 30 (było 35), 226 pod spodem (było 230), opisy nie przecinają linii pala (boki, oś) — sprawdzone na zrzutach
-            ["nib"]      = "1ce474bc46cbd49b2db8443094b87a3e02e31430024a7e8602f9ee1ac6caaa11",
+            ["nib"]      = "e9f9e90b32207fc37236a58d8fa4ce05e4d79b2d0cdae5b94b7fc47090e141dc",
             ["hole"]     = "cf9c88950c7911e95abdc2279fcd0bd737b7f83bf76131f6beccaccf1d420164",
  // (uwaga „nasze pale mają 300”): pal przecięty poza osią — pełna średnica, nie cięciwa (drugi pal 566 → 600)
             ["piles"]    = "4b16fe5ed013879013ab00842283c38be96e2f93d29061b87548a537b2e82d5f",
-            ["vertical"] = "b7d453c9093a86c4321faf50aeeec03595182eb84263d1da37ed2c37b8fb85d2",
-            ["fitshape"] = "6dfb28cfe9e7068c845c0e3044b357f7457cf890f53f24fbfd38ff5657dd9452",
+            ["vertical"] = "b8ac945b3ea9cfd533288e3769b0542c6534a246a8c45351c9b9950fb01761c7",
+            ["fitshape"] = "4e8701415eba0a00c0b334666e909fc43a3774ca413a915a789150d35c0ff7c8",
  // plan belek E5 + E4b: przekrój przez belkę — zapisany po przejrzeniu zrzutu (profil, kropki, strzemię, boczne, nib, wymiary);
             // poprawki recenzji: + UB 03 i T IN NIB w wejściu, BN w narożach spinki, T IN NIB w trzonie na poziomie płyty;
  // otuliny belki (boki 45, dół 50): strzemię 265 × 510, kropki 223 … 697 / −307; K2: bez
             // ostrzeżenia o otulinie UB 03 (jedyna różnica względem 644610bd… — sprawdzone: zrzut + dawna linia WARN = dawny skrót)
-            ["beam"]     = "ede9186b58eec69ebbd72ded2109ba8dc137e4353880e660244900a21d42abe9",
+            ["beam"]     = "15139c3c6801ce02c6c7082ec0ff1300887bda7a2ed57b4c6a9ea654ed6a5287",
  // wersja 3 (zakończenia prętów Z1–Z6, decyzja użytkownika) — zapisane po przejrzeniu zrzutów (render: kreski
             // do wnętrza, w betonie, zasięg prętów bez zmian, zakład T1 104 / B1 05 odsunięty o 25, UB 01 / 03 — symbole na wolnych końcach,
             // strzemię bez symboli); „hole” w stylach = „hole” bez stylu (Z4: pręty przechodzą przez otwór / urwanie);
  // kreska 30 mm: względem 50 mm zmieniają się tylko linie BAR z kreskami (ramię skrócone o 30/√2), opisy bez zmian
-            ["nib-S1"]      = "83ced0f4f23dc14d247499ffb7375317f252229aee0f8769519814fef0434337",   // v5: bez odsunięcia zakładów
+            ["nib-S1"]      = "6a5412cbb4be25a255bff97259e23685faad1b88b4ceae3e904a012ab5c84146",   // v5: bez odsunięcia zakładów
             ["hole-S1"]     = "cf9c88950c7911e95abdc2279fcd0bd737b7f83bf76131f6beccaccf1d420164",
-            ["fitshape-S1"] = "523c042c8ab58617cc9f3cb2355ce1a0cb4f8331d411b5d7bcdeb16b64c5131d",
-            ["beam-S1"]     = "a149fa28faf2ff9161213e18c76a50cb06500f0ee6911329f153574ca3734cca",
-            ["along-S1"]    = "8678b00dd6e36df96132571d86bf22a4001d903f94bbceaac11a4eaa707ab1be",   // (uwaga, PLOT 144-146): bez prętów bocznych SIDE nieprzeciętych linią cięcia (jedyna zmiana); //: UB 03 licuje się ze strzemieniem; kolejność poziomów siatki przy belce (górny pierwszy — te same kropki)
+            ["fitshape-S1"] = "b19dd393e920929e86d8dc574782efebe65aad7f8dd9111e45ee22f0a84e25e8",
+            ["beam-S1"]     = "a466ef6ed9a05bd0f9264785a09d182a375e7998c0de2e0e611cfffd8afe14ac",
+            ["along-S1"]    = "dcbcf38dd72adcdb7f8885a5eab6c41c4c8196139761fe5f6d693b190d706823",   // (uwaga, PLOT 144-146): bez prętów bocznych SIDE nieprzeciętych linią cięcia (jedyna zmiana); //: UB 03 licuje się ze strzemieniem; kolejność poziomów siatki przy belce (górny pierwszy — te same kropki)
         };
 
         [TestCaseSource(nameof(Cases))]
-        public void Plan_FullResult_IsBitIdentical(string name, Func<SectionPlanner.Input> make)
+        public void Plan_FullResult_MatchesGolden(string name, Func<SectionPlanner.Input> make)
         {
-            var dump = Dump(SectionPlanner.Plan(make()));
+            var result = SectionPlanner.Plan(make());
+            var dump = DumpNormalized(result);
             string sha = Sha(dump);
             string gold = Golden.TryGetValue(name, out var g) ? g : "(brak)";
             if (sha != gold)
             {
                 string path = Path.Combine(Path.GetTempPath(), "section-golden-" + name + ".txt");
                 File.WriteAllText(path, dump);
+                File.WriteAllText(Path.ChangeExtension(path, ".raw.txt"), Dump(result));   // pełny zrzut „R” do diagnozy
                 Assert.Fail($"{name}: SHA {sha} ≠ złoty {gold} (zrzut: {path})");
             }
+        }
+
+        // ── normalizacja N (rozwiązanie B): format, odporność na 1 ulp, czułość na zmiany, granice zaokrąglenia ──
+
+        [TestCase(710.0, "710")]
+        [TestCase(-710.0, "-710")]
+        [TestCase(0.0, "0")]
+        [TestCase(-0.0, "0")]
+        [TestCase(4e-7, "0")]
+        [TestCase(-4e-7, "0")]
+        [TestCase(2.4e-6, "0.000002")]
+        [TestCase(-312.67766952966366, "-312.67767")]   // Linux (= złoty, beam BAR 10 07)
+        [TestCase(-312.6776695296637, "-312.67767")]    // Windows (+1 ulp) — ten sam zapis
+        [TestCase(0.1, "0.1")]
+        [TestCase(123456.789, "123456.789")]
+        [TestCase(double.NaN, "NaN")]
+        [TestCase(double.PositiveInfinity, "Infinity")]
+        [TestCase(double.NegativeInfinity, "-Infinity")]
+        public void N_FormatsDeterministically(double v, string expected)
+            => Assert.That(N(v), Is.EqualTo(expected));
+
+        [Test]
+        public void N_NegativeZeroBits_IsZero()
+            => Assert.That(N(BitConverter.Int64BitsToDouble(long.MinValue)), Is.EqualTo("0"));
+
+        /// <summary>Wszystkie liczby double zrzutu (te same pola co <see cref="DumpNormalized"/>) dla każdego przypadku złotego.</summary>
+        private static List<(string Name, double V)> GoldenValues()
+        {
+            var all = new List<(string Name, double V)>();
+            foreach (var tc in Cases())
+            {
+                string name = (string)tc.Arguments[0]!;
+                var make = (Func<SectionPlanner.Input>)tc.Arguments[1]!;
+                Dump(SectionPlanner.Plan(make()), v => { all.Add((name, v)); return R(v); });
+            }
+            return all;
+        }
+
+        /// <summary>Różnica platformowa rzędu 1 ulp (Math.Sin / Math.Atan2: Windows vs Linux) nie zmienia zapisu żadnej wartości złotej.</summary>
+        [Test]
+        public void Normalized_IgnoresOneUlp_AllGoldenValues()
+        {
+            int n = 0;
+            foreach (var (name, v) in GoldenValues())
+            {
+                if (double.IsNaN(v) || double.IsInfinity(v)) continue;
+                string s = N(v); n++;
+                Assert.That(N(Math.BitIncrement(v)), Is.EqualTo(s), $"{name}: {R(v)} +1 ulp");
+                Assert.That(N(Math.BitDecrement(v)), Is.EqualTo(s), $"{name}: {R(v)} -1 ulp");
+            }
+            Assert.That(n, Is.GreaterThan(0));
+        }
+
+        /// <summary>Zapas od granicy zaokrąglenia siatki 1e-6 mm: ok. 2·10^4 × obserwowana różnica platformowa (5,7e-14 mm).</summary>
+        private const double RoundingMargin = 1e-9;
+
+        /// <summary>
+        /// Strażnik granic zaokrąglenia: żadna wartość złota nie leży bliżej niż <see cref="RoundingMargin"/> od połowy kroku
+        /// siatki 1e-6 mm. Gdyby przyszła geometria tam trafiła, test wskaże to wprost (zamiast losowej niezgodności SHA między
+        /// platformami) — wtedy zmienić dane wejściowe przypadku albo przejrzeć normalizację.
+        /// </summary>
+        [Test]
+        public void Normalized_GoldenValues_FarFromRoundingBoundary()
+        {
+            foreach (var (name, v) in GoldenValues())
+            {
+                if (double.IsNaN(v) || double.IsInfinity(v)) continue;
+                Assert.That(N(v + RoundingMargin), Is.EqualTo(N(v - RoundingMargin)),
+                    $"{name}: {R(v)} leży bliżej niż {RoundingMargin} mm od granicy zaokrąglenia 1e-6 mm");
+            }
+        }
+
+        /// <summary>Zmiana dowolnej pojedynczej wartości zrzutu o ±0,01 / ±0,1 mm zmienia skrót każdego przypadku złotego.</summary>
+        [TestCase(0.01)]
+        [TestCase(0.1)]
+        public void Normalized_DetectsGeometryChange_EveryValue(double delta)
+        {
+            foreach (var tc in Cases())
+            {
+                string name = (string)tc.Arguments[0]!;
+                var r = SectionPlanner.Plan(((Func<SectionPlanner.Input>)tc.Arguments[1]!)());
+                string baseSha = Sha(DumpNormalized(r));
+                var vals = new List<double>();
+                Dump(r, v => { vals.Add(v); return R(v); });
+                for (int k = 0; k < vals.Count; k++)
+                {
+                    if (double.IsNaN(vals[k]) || double.IsInfinity(vals[k])) continue;
+                    foreach (double d in new[] { delta, -delta })
+                    {
+                        int i = 0;
+                        string changed = Dump(r, v => N(i++ == k ? v + d : v));
+                        Assert.That(Sha(changed), Is.Not.EqualTo(baseSha), $"{name}: wartość #{k} ({R(vals[k])}) {d:+0.##;-0.##} mm");
+                    }
+                }
+            }
+        }
+
+        /// <summary>Zmiana wejścia przypadku beam (pal pod belką, krawędź nibu) o 0,01 / 0,1 mm zmienia skrót; o 1e-12 mm — nie.</summary>
+        [TestCase(0.01, true)]
+        [TestCase(0.1, true)]
+        [TestCase(1e-12, false)]
+        public void Normalized_BeamInputShift(double delta, bool changes)
+        {
+            var a = CaseBeam(); var p = a.Piles[0]; a.Piles[0] = (p.Item1 + delta, p.Item2, p.Item3);
+            var b = CaseBeam(); b.Nibs[0].InnerCoord += delta;
+            Assert.That(Sha(DumpNormalized(SectionPlanner.Plan(a))) != Golden["beam"], Is.EqualTo(changes), "pal");
+            Assert.That(Sha(DumpNormalized(SectionPlanner.Plan(b))) != Golden["beam"], Is.EqualTo(changes), "nib");
         }
 
         [Test]

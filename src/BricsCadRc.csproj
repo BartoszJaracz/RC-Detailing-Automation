@@ -37,11 +37,11 @@
 
   <ItemGroup>
     <!-- Wbudowany szablon BBS (RC_BBS) -->
-    <EmbeddedResource Include="Resources\default-bbs.xls" LogicalName="BricsCadRc.default-bbs.xls" />
+    <EmbeddedResource Include="Resources\default-bbs.xls" Condition="Exists('Resources\default-bbs.xls')" LogicalName="BricsCadRc.default-bbs.xls" />
     <!-- Szablon arkusza RC (RC_PRZYGOTUJ_GA, decyzja): tytuły rzutów, layout A1 bez rzutni, detale PH1–PH9 -->
-    <EmbeddedResource Include="Resources\rc-template.dxf.gz" LogicalName="BricsCadRc.rc-template.dxf.gz" />
+    <EmbeddedResource Include="Resources\rc-template.dxf.gz" Condition="Exists('Resources\rc-template.dxf.gz')" LogicalName="BricsCadRc.rc-template.dxf.gz" />
     <!-- Tabela pisaków wydruku RC (z ASD) — kopiowana do PlotStyles BricsCAD, gdy jej brak (PlotSetupEngine) -->
-    <EmbeddedResource Include="Resources\demo-mono.ctb" LogicalName="BricsCadRc.demo-mono.ctb" />
+    <EmbeddedResource Include="Resources\demo-mono.ctb" Condition="Exists('Resources\demo-mono.ctb')" LogicalName="BricsCadRc.demo-mono.ctb" />
     <!-- Ikony wstazki (32 i 16 px) -->
     <EmbeddedResource Include="Resources\Icons\*.png" LogicalName="BricsCadRc.Icons.%(Filename)%(Extension)" />
   </ItemGroup>
